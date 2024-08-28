@@ -1,0 +1,52 @@
+---
+title: "AFS Analysis and Visualization"
+output: html_document
+date: "2024-08-28"
+---
+
+# Summary
+
+For the talk at the American Fisheries Society, I am exploring how the driver layers can be used to examine fisheries and pollution overlap. This is a sandbox area to explore ways to move the data around and analyze it that might be interesting. 
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(here)
+source(here("workflow/setup.R"))
+
+
+```
+
+# Idea 1: Create product for input to bivisualziations ArcPro
+
+```{r}
+
+# Attempt 1: this didnt work
+all_rec_fish <- rast(file.path(data_dir,"hi_otp_all_fishing_rec.tif"))
+all_comm_fish <- rast(file.path(data_dir,"hi_otp_all_fishing_com.tif"))
+
+# convert to polygons using terra - this takes for ever
+poly_rec_fish <- as.polygons(all_rec_fish, round = FALSE)
+poly_comm_fish <- as.polygons(all_comm_fish)
+
+# convert to sf
+sf_rec_fish <- st_as_sf(poly_rec_fish)
+
+
+# try again, this time converting to a table: 
+
+rec_df <- as.data.frame(all_rec_fish, xy = TRUE, cells = TRUE)
+comm_df <- as.data.frame(all_comm_fish, xy = TRUE, cells = TRUE)
+
+# join tables - this isnt working because the tables are not the same
+
+joined <- left_join(rec_df,comm_df, by = c("x","y"))
+
+
+```
+
+
+# Idea: Calculate percent overlap between "hotspots" for different drivers 
+
+
+
