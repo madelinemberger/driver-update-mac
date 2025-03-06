@@ -1,0 +1,41 @@
+---
+title: "OSDS Points Explore"
+author: "Madeline Berger"
+date: "2025-03-05"
+output: html_document
+---
+
+```{r}
+
+
+library(sf)
+library(terra)
+library(here)
+library(janitor)
+library(tidyverse)
+
+gdb_path <- here("data/osds/FINAL_OSDS_Products.gdb")
+
+layers <- st_layers(gdb_path)
+
+oahu_osds_23 <- st_read(file.path(gdb_path), layer = "Oahu_OSDS_2023")
+
+oahu_osds_2009_2023 <- oahu_osds_23 %>% 
+  clean_names() %>% 
+  filter(year != "pre 2009") %>% 
+  mutate(osds_class = as.integer(osds_class)) %>% 
+  mutate(year = as.Date(year, format = "%Y")) %>% 
+  mutate(year = year(year))
+
+
+```
+
+
+# to do:
+- add moku and ahupua'a to the dataset
+- figure out how to read in everything else
+
+
+# rasters: 
+- apply 5 year averages
+- create cool visuals to assess change over time (what do averages tell us)?

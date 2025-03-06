@@ -17,7 +17,7 @@ source(here("workflow/setup.R"))
 
 ```
 
-# Idea 1: Create product for input to bivisualziations ArcPro
+# Idea 1: Create product for input to bivisualziations ArcPro (not working yet)
 
 ```{r}
 
@@ -35,18 +35,119 @@ sf_rec_fish <- st_as_sf(poly_rec_fish)
 
 # try again, this time converting to a table: 
 
-rec_df <- as.data.frame(all_rec_fish, xy = TRUE, cells = TRUE)
+rec_df <- as.data.frame(all_rec_fish, xy = TRUE, cells = TRUE, na.rm = FALSE)
 comm_df <- as.data.frame(all_comm_fish, xy = TRUE, cells = TRUE)
 
 # join tables - this isnt working because the tables are not the same
 
 joined <- left_join(rec_df,comm_df, by = c("x","y"))
 
+# check if coordinates match
+
+
+```
+
+The above did not work because the rasters are not aligned. Try some code to realign, although not sure it will work
+
+
+```{r}
+
+# try to just align: 
+
+comm_aligned <- terra::resample(all_rec_fish,all_comm_fish)
+
+comm_aligned_df <- as.data.frame(comm_aligned, xy = TRUE, cells = TRUE, na.rm = FALSE)
+
+all.equal(rec_df[, c("x","y")], comm_aligned_df[, c("x","y")])
+
+all.equal(ext(all_rec_fish), ext(comm_aligned))
+all.equal(res(all_rec_fish), res(comm_aligned))
+all.equal(origin(all_rec_fish), origin(comm_aligned))
+
+# define chunk
+
+chunk <- 500
+
+# write a function that aligns each chunk
+
+realign_chunk <- function(raster1,raster2,row_start, nrows){
+  # Extract chunk
+  r1_chunk <- crop(raster1, ext(raster1, row_start, row_start + nrows - 1, 1, ncol(raster1)))
+  r2_chunk <- crop(raster2, ext(raster2, row_start, row_start + nrows - 1, 1, ncol(raster2)))
+  
+  # Align the chunk from raster2 to raster1
+  r2_chunk_aligned <- resample(r2_chunk, r1_chunk)
+  
+  # Return the processed chunk
+  return(list(r1_chunk = r1_chunk, r2_chunk_aligned = r2_chunk_aligned))
+
+}
+
+# Process the fishing raster in chunks
+
+
 
 ```
 
 
-# Idea: Calculate percent overlap between "hotspots" for different drivers 
+# Idea 2: Calculate percent overlap between "hotspots" for different drivers 
+
+```{r}
+
+# read in funtions for calculations
+
+extremes = function(r,q){
+        qua = quantile(r[],q,na.rm=TRUE) # get the value that demarcates the top theshold
+        Q = r > qua # filter your raster for only values above that 
+        Q[Q==0]=NA # set all other values to NA
+        r*Q # multiply original raster by Q to zero out any values you dont want
+        }
+
+# Apply to non commercial
+
+all_rec_fish_5 <- extremes(noncomm_boat_spear, q = 0.95)
+all_rec_fish_10 <- extremes(noncomm_boat_spear, q = 0.90) # these are not very different
+
+# using the 10% threshold, calculate the pixels and then area (area might not be necessary)
+
+total_pixels <- global(all_rec_fish_10, fun = "notNA")
+pixel_area <- 100*100
+top_fishing_area_m = total_pixels[1,1] * pixel_area
+top_fishing_area_km = top_fishing_area_m / 1e+6
+
+# also do it by island - ie where are the top 10 most fished areas by island?
 
 
 
+
+
+
+```
+
+
+# Idea 3: Look at overlap between pollution and MMAs
+
+```{r}
+
+# read in MMAs 
+
+mmas <- st_read(file.path(data_dir,"Marine_Managed_Areas_(DAR)/Marine_Managed_Areas_(DAR).shp"))
+
+mapview(mmas)
+
+# filter out for focus ones: fisheries replenishment & reserves
+
+mmas_preservation_focus <- mmas %>% 
+  filter(mma_design %in% c("Marine Life Conservation District","Fish Replenishment Area","Fish Replenishment Area / Netting Restricted Area"))
+
+mapview(mmas_preservation_focus)
+  
+# throw in FMAS if interesting
+
+  
+
+```
+
+We can to assess overlap:
+1. Intersecting the top 10 pollution polygon with the fmas
+2. Some kind of zonal stats - get total amount of fishing and divide that by the total (I think this would only work for )
