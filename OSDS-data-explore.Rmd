@@ -14,20 +14,93 @@ library(here)
 library(janitor)
 library(tidyverse)
 
+library(gt)
+library("webshot")
+#install.packages("webshot")
+webshot::install_phantomjs()  # Needed for saving as PNG
+
+
+
+
 gdb_path <- here("data/osds/FINAL_OSDS_Products.gdb")
 
 layers <- st_layers(gdb_path)
 
-oahu_osds_23 <- st_read(file.path(gdb_path), layer = "Oahu_OSDS_2023")
+oahu_osds_23 <- st_read(file.path(gdb_path), layer = "Oahu_OSDS_2023") %>% 
+  clean_names() %>% 
+  mutate(class_desc = case_when(
+    osds_class == 1 ~ "1: Septic - Tank, Bed, or Trench",
+    osds_class == 2 ~ "2: Septic - Seepage Pit (or unknown)",
+    osds_class == 3 ~ "3: Compost Toilet, Grey Water System, or ATU Pit",
+    osds_class == 4 ~ "4: Cesspool",
+    osds_class == 5 ~ "5: Multiple types",
+    TRUE ~ "unknown"
+  ))
+
+
+total_pre2008 <- sum(oahu_osds_23$osds_qty[oahu_osds_23$year == "pre 2009"], na.rm = TRUE) #13175
+
 
 oahu_osds_2009_2023 <- oahu_osds_23 %>% 
-  clean_names() %>% 
+  #clean_names() %>% 
   filter(year != "pre 2009") %>% 
   mutate(osds_class = as.integer(osds_class)) %>% 
+  #mutate(year = ifelse(year == "pre 2009",2008,year)) %>% 
   mutate(year = as.Date(year, format = "%Y")) %>% 
-  mutate(year = year(year))
+  mutate(year = year(year)) %>% 
+  rowid_to_column()
+
+total <- sum(oahu_osds_2009_2023$osds_qty)
+
+oahu_osds_agg <- oahu_osds_2009_2023 %>% 
+  as.data.frame() %>% 
+  select(-starts_with("point")) %>% 
+  group_by(year, class_desc) %>% 
+  summarize(
+    total = sum(osds_qty)
+  )
+  
+oahu_osds_table <- oahu_osds_agg %>%
+  pivot_wider(id_cols = "class_desc", names_from = "year", values_from = "total") %>% 
+  adorn_totals(where = c("row","col"))
 
 
+table_gt <- gt(oahu_osds_table)
+gtsave(table_gt, "table_output.png")
+
+# number by year, oahu
+year_bar <- ggplot(oahu_osds_agg, aes(x = year, y = total, group = class_desc))+
+  geom_bar(stat = "identity", position = "stack",aes(fill = class_desc))+
+  theme_bw()
+
+year_bar
+
+
+
+# older 
+
+oahu_osds_pre2009 <- oahu_osds_23 %>% 
+  #clean_names() %>% 
+  filter(year == "pre 2009") %>% 
+  mutate(osds_class = as.integer(osds_class)) %>% 
+  #mutate(year = ifelse(year == "pre 2009",2008,year)) %>% 
+  mutate(year = as.Date(year, format = "%Y")) %>% 
+  mutate(year = year(year)) %>% 
+  rowid_to_column()
+
+
+oahu_osds_old_agg <- oahu_osds_pre2009 %>% 
+  as.data.frame() %>% 
+  select(-starts_with("point")) %>% 
+  group_by(class_desc) %>% 
+  summarize(
+    total = sum(osds_qty)
+  ) %>% 
+  adorn_totals(where = "row")
+  
+old_table_gt <- gt(oahu_osds_old_agg)
+
+gtsave(old_table_gt, "old_table_output.png")
 ```
 
 
