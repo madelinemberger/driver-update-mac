@@ -1,0 +1,195 @@
+---
+title: "OSDS Nearshore Impact Model"
+author: "Madeline Berger"
+date: "2025-03-29"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(here)
+
+
+source(here("workflow/setup.R"))
+
+
+# read in osds points and explore
+
+osds_gdb <- here("data/osds/FINAL_OSDS_PRODUCTS.gdb")
+st_layers(osds_gdb)
+oahu_2023 <- st_read(osds_gdb, layer = "Oahu_OSDS_2023")
+
+plot(oahu_2023)
+
+
+
+
+```
+
+# Modelling OSDS Impact to Nearshore
+
+This markdown walks through the steps of estimating the relative impact of OSDS on the nearshore of the Main Hawaiian Islands. 
+
+Input data needed: 
+- Point locations of all functional OSDS and the year they were permitted. We are using year permitted as a proxy for year built although it may be that some are not built right away.
+- Ocean mask
+- Euclidean distance mask 
+
+## Step 0: Clean and explore OSDS Data
+
+```{r}
+
+
+
+hist(oahu_2023$Effluent)
+hist(oahu_2023$Nitrogen_Flux[!is.na(oahu_2023$Nitrogen_Flux)])
+
+max(oahu_2023$Effluent)
+
+nas <- oahu_2023_nad83 %>% 
+  filter(!is.na(Effluent)) # 129
+
+max(oahu_2023$Effluent, na.rm = T)
+min(oahu_2023$Effluent, na.rm = T)
+mean(oahu_2023$Effluent, na.rm = T)
+
+
+median(oahu_2023$Effluent, na.rm = T)
+
+nas <- oahu_2023_nad83 %>% 
+  filter(is.na(Nitrogen_Flux)) 
+
+
+nozeros <- oahu_2023_nad83 %>% 
+  filter(Effluent > 0 ) 
+
+
+mapview(nozeros, zcol = "Effluent")
+
+
+# ok so effluent has a crazy range. Need to:
+# remove injection wells and anything after 2019
+# multiply yearly effluent by the years in serivce, which = 2019 - year 
+# multiply N by effluent
+
+
+osds_2015_2019 <- oahu_2023 %>% 
+  filter(Year < 2020) %>% 
+  filter(PermitType != "Injection Well") %>% 
+  mutate(Year = as.numeric(Year)) %>% 
+  mutate(years_active_2015_2019 = (2020 - Year) - (2015 - Year)) %>% 
+  mutate(total_N_toenv2015_2019 = years_active_2015_2019 * 365 * Nitrogen_Flux) %>% 
+  mutate(Nflux_kgpday_5yr_avg = total_N_toenv2015_2019 / (365 *5))
+
+
+# questions - does Effluent scale with N flux?
+
+plot(osds_2015_2019$Effluent, osds_2015_2019$Nitrogen_Flux)
+
+
+```
+
+## Step 1: Aggregate effluent and convert to 100 x 100 m raster
+
+**Goal:**
+**Assumptions:**
+
+```{r}
+
+# read in ocean mask and use extent of oahu points to crop
+ocean_mask <- terra::rast(file.path(data_dir,"OceanMask_LBSP_post2018.tif")) #
+
+osds_2015_2019_nad83 <- st_transform(osds_2015_2019, crs = crs(ocean_mask))
+extent <- ext(oahu_2023_nad83)
+extent_vec <- as.vector(extent)
+
+# expand extent to fit entire ocean mask
+add_vec <- c(-14283,14300,-20892,20000)
+new_extent <- extent_vec + add_vec
+expanded <- ext(new_extent)
+
+# crop ocean mask by extent
+ocean_mask_oahu <- terra::crop(ocean_mask, expanded, mask = T)
+plot(ocean_mask_oahu)
+
+# create raster template and rasterize points with terra
+
+r_om <- rast(ocean_mask_oahu)
+osds_raster <- rasterize(vect(osds_2015_2019_nad83), r_om, field = "Nflux_kgpday_5yr_avg", fun = "sum", na.rm = T)
+plot(osds_raster)
+
+
+```
+
+
+## Step 2: Apply focal statistics to estimate "sphere of impact" into nearshore
+
+**Goal:**
+- Estimate how OSDS impacts the nearshore
+
+**Assumptions:**
+- Ocean areas closest to pixels with higher effluent, from aggregated OSDS point data, will experience the highest impact from the leaching / runoff 
+
+```{r}
+  
+# create a matrix of the raster values, and then replace any non zero value with 1
+  fw_mat <- focalMat(osds_raster,2500, type = "circle") #2100 does not cover all indicator maps
+  fw_mat[fw_mat > 0 ] <- 1
+  
+# apply focal statistics
+  focalStat <- terra::focal(osds_raster,w = fw_mat, fun = "sum", na.rm = T) # na.rm key to making it expand out
+
+plot(focalStat)
+
+
+```
+
+
+
+## Step 3: Use ocean mask to limit area of impact to marine space & add decay function
+
+**Assumptions:**
+- Intensity of impact lessens with distance from shore, due to chemical decay of N or P and / or wave or currents
+- Decay occurs as a linear function of distance from shore 
+
+```{r}
+
+# extract focal statistics by ocean mask
+
+ocean_mask_oahu[ocean_mask_oahu != 10] <- NA # I had to change this because it reads in the new om weird
+
+focalStat_nearshore <- mask(focalStat, ocean_mask_oahu)
+
+plot(focalStat_nearshore)
+
+# get custon decay function
+
+source(here("workflow/offshoreDecay.R"))
+
+# read in Euclidean distance, check the crs and crop by the custom extent
+
+euc_distance <- rast(file.path(data_dir,"DistFromShore_Euc_2023.tif"))
+euc_distance_oahu <- terra::crop(euc_distance, expanded, mask = T)
+plot(euc_distance_oahu)
+
+# apply to nearshore raster
+  
+final_osds_2019_2015 <- offshore_decay(focalStat_nearshore,euc_distance_oahu)
+# save final raster
+  
+plot(final_osds_2019_2015)
+
+final_osds_2019_2015[final_osds_2019_2015 == 0] <- NA
+
+plot(final_osds_2019_2015)
+
+writeRaster(
+  final_osds_2019_2015,
+  filename = here("outputs/Oahu_OSDS_2015_2019_draft.tif"),
+  overwrite = T
+)
+
+```
+
+
