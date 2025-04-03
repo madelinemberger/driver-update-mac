@@ -3,6 +3,9 @@ title: "OSDS Nearshore Impact Model"
 author: "Madeline Berger"
 date: "2025-03-29"
 output: html_document
+editor_options: 
+  markdown: 
+    wrap: 72
 ---
 
 ```{r setup, include=FALSE}
@@ -23,18 +26,22 @@ oahu_2023 <- st_read(osds_gdb, layer = "Oahu_OSDS_2023")
 plot(oahu_2023)
 
 
-
-
 ```
 
 # Modelling OSDS Impact to Nearshore
 
-This markdown walks through the steps of estimating the relative impact of OSDS on the nearshore of the Main Hawaiian Islands. 
+This markdown walks through the steps of estimating the relative impact
+of OSDS on the nearshore of the Main Hawaiian Islands.
 
-Input data needed: 
-- Point locations of all functional OSDS and the year they were permitted. We are using year permitted as a proxy for year built although it may be that some are not built right away.
-- Ocean mask
-- Euclidean distance mask 
+Input data needed:
+
+-   Point locations of all functional OSDS and the year they were
+    permitted. We are using year permitted as a proxy for year built
+    although it may be that some are not built right away
+
+-   Ocean mask
+
+-   Euclidean distance mask
 
 ## Step 0: Clean and explore OSDS Data
 
@@ -93,6 +100,7 @@ plot(osds_2015_2019$Effluent, osds_2015_2019$Nitrogen_Flux)
 ## Step 1: Aggregate effluent and convert to 100 x 100 m raster
 
 **Goal:**
+
 **Assumptions:**
 
 ```{r}
@@ -122,14 +130,17 @@ plot(osds_raster)
 
 ```
 
-
 ## Step 2: Apply focal statistics to estimate "sphere of impact" into nearshore
 
 **Goal:**
-- Estimate how OSDS impacts the nearshore
+
+-   Estimate how OSDS impacts the nearshore
 
 **Assumptions:**
-- Ocean areas closest to pixels with higher effluent, from aggregated OSDS point data, will experience the highest impact from the leaching / runoff 
+
+-   Ocean areas closest to pixels with higher effluent, from aggregated
+    OSDS point data, will experience the highest impact from the
+    leaching / runoff
 
 ```{r}
   
@@ -145,13 +156,14 @@ plot(focalStat)
 
 ```
 
-
-
 ## Step 3: Use ocean mask to limit area of impact to marine space & add decay function
 
 **Assumptions:**
-- Intensity of impact lessens with distance from shore, due to chemical decay of N or P and / or wave or currents
-- Decay occurs as a linear function of distance from shore 
+
+-   Intensity of impact lessens with distance from shore, due to
+    chemical decay of N or P and / or wave or currents
+
+-   Decay occurs as a linear function of distance from shore
 
 ```{r}
 
@@ -165,7 +177,7 @@ plot(focalStat_nearshore)
 
 # get custon decay function
 
-source(here("workflow/offshoreDecay.R"))
+source(here("workflow/offshoreDecay.R")) # identical to all other decay for LBSP
 
 # read in Euclidean distance, check the crs and crop by the custom extent
 
@@ -191,5 +203,3 @@ writeRaster(
 )
 
 ```
-
-
