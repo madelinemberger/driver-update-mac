@@ -2,14 +2,20 @@
 title: "OSDS Nearshore Impact Model"
 author: "Madeline Berger"
 date: "2025-03-29"
-output: html_document
-editor_options: 
-  markdown: 
+output:
+  pdf_document: default
+  html_document: default
+editor_options:
+  markdown:
     wrap: 72
 ---
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(echo = TRUE,
+                      message = FALSE,
+                      warning = FALSE,
+                      eval = FALSE
+                      )
 
 library(here)
 
@@ -28,6 +34,15 @@ mapview(oahu_2023)
 
 # read in ocean mask and use extent of oahu and maui points to crop
 ocean_mask <- terra::rast(file.path(data_dir,"OceanMask_LBSP_post2018.tif"))
+
+
+# Save point data so we can zip up gdbs and not have them clog up my computer
+
+st_write(
+  oahu_2023,
+  dsn = here("data/osds/oahu_2023_raw.shp")
+)
+
 
 ```
 
@@ -235,6 +250,10 @@ mauinui_2023 <- st_read(osds_gdb, layer = "MauiNui_OSDS_2023")
 plot(mauiui_2023)
 
 
+st_write(
+  mauinui_2023,
+  dsn = here("data/osds/mauinui_2023_raw.shp")
+)
 # check valid geoms 
 
 mauinui_2023 <- mauinui_2023 %>% 
@@ -573,6 +592,9 @@ maui_final_osds_2015_2019_IW <- offshore_decay(maui_focStat_2015_2019IW,euc_dist
 maui_final_osds_2015_2019_IW[maui_final_osds_2015_2019_IW == 0] <- NA
 plot(maui_final_osds_2015_2019_IW)
 
+
+minmax(maui_final_osds_2010_2014)
+minmax(maui_final_osds_2015_2019)
 
 ```
 
