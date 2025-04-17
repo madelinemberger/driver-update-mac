@@ -597,6 +597,7 @@ plot(euc_distance_maui)
   
 final_osds_2015_2019 <- offshore_decay(focStat_2015_2019,euc_distance_oahu)
 final_osds_2015_2019[final_osds_2015_2019 == 0] <- NA
+minmax(final_osds_2015_2019)
 
 
 final_osds_2015_2019_IW <- offshore_decay(focStat_2015_2019_IW,euc_distance_oahu)
@@ -605,6 +606,7 @@ final_osds_2015_2019_IW[final_osds_2015_2019_IW == 0] <- NA
 
 final_osds_2010_2014 <- offshore_decay(focStat_2010_2014,euc_distance_oahu)
 final_osds_2010_2014[final_osds_2010_2014 == 0] <- NA
+minmax(final_osds_2010_2014)
 
 
 final_osds_2010_2014_IW <- offshore_decay(focStat_2010_2014_IW,euc_distance_oahu)

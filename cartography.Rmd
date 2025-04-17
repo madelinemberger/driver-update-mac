@@ -1,0 +1,101 @@
+---
+title: "Cartography - misc."
+author: "Madeline Berger"
+date: "2025-04-16"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(sf)
+library(tidyverse)
+library(terra)
+library(tmap)
+library(mapview)
+
+library(here)
+```
+
+## Misc Cartography
+
+This markdown is a place to make maps while I figure out a better long term solution on my mac
+
+
+## Maui case study maps 
+
+This map was initially created for the HIMB scholarship symposium as a simple illustration for a slide. Will likely be useful in the future as well. 
+
+```{r}
+
+# read in shorelines and watersheds and moku
+
+shoreline <- st_read(here("data/Coastlines_Watersheds/shoreline_CorrectedInlets_2022-23.shp")) %>% 
+  filter(Island == "Maui")
+
+watersheds <- st_read(here("data/Coastlines_Watersheds/WBD_HU12_n83utm4_2023fixed.shp"))
+
+moku <- st_read(here("data/Moku_New/Moku_NEW.shp"))
+
+mapview(moku)
+
+
+# get maui watersheds only
+
+maui_watersheds <- watersheds %>%
+  st_filter(shoreline, .predicates = st_intersects)
+
+mapview(maui_watersheds)
+
+# make some point for kihei and honolua bay
+
+maui_poi <- data.frame(
+  names = c("Kihei","Honolua Bay"),
+  lon = c(-156.4542,-156.6385),
+  lat = c(20.7399,21.0139)
+)
+
+maui_poi_sf <- st_as_sf(maui_poi, coords = c("lon","lat"), crs = 4326)
+
+mapview(maui_poi_sf)
+
+library(RColorBrewer)
+# add column to map colors to
+
+maui_watersheds$color_map <- ifelse(maui_watersheds$Name %in% c("Honokohau Stream","Kulanihakoi Gulch"),"wheat","cadetblue")
+
+
+# create tmap
+
+maui_map <- tm_shape(shoreline)+
+  tm_fill(fill = "darkslategrey")+
+  # tm_borders(lwd = 2,
+  #           col = "black")+
+  tm_shape(maui_watersheds)+
+  tm_fill(col = "color_map",
+          #palette = c("seagreen","darkgrey"),
+          style = "cat")+
+  tm_shape(maui_poi_sf)+
+  tm_symbols(col = "black",
+             size = 0.17)
+  # tm_text("names",
+  #         size = 1,
+  #         just = "left")+
+  # tm_layout(
+  #   frame = FALSE
+  # )
+  # tm_borders(lwd = 0.2,
+  #            col = "black") 
+
+
+
+maui_map
+
+## 
+
+tmap_save(maui_map, filename = "maui_map_himbsymp.png", bg = "transparent", dpi = 300)
+
+```
+
+## Template figures?
+
