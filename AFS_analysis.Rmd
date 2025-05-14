@@ -97,8 +97,8 @@ realign_chunk <- function(raster1,raster2,row_start, nrows){
 # read in funtions for calculations
 
 extremes = function(r,q){
-        qua = quantile(r[],q,na.rm=TRUE) # get the value that demarcates the top theshold
-        Q = r > qua # filter your raster for only values above that 
+        qua = quantile(r[],q,na.rm=TRUE) # get the value that demarcates the top threshold
+        Q = r > qua # filter raster for only values above that 
         Q[Q==0]=NA # set all other values to NA
         r*Q # multiply original raster by Q to zero out any values you dont want
         }
@@ -142,10 +142,43 @@ mmas_preservation_focus <- mmas %>%
 
 mapview(mmas_preservation_focus)
   
-# throw in FMAS if interesting
+# get 10 percent of sewage
 
-  
+sewage_01 <- rast(file.path(data_dir,"Sewage_Layer_01.tif"))
 
+hist(sewage_01)
+
+extremes = function(r,q){
+        r = rast
+        
+        qua = quantile(r[],q,na.rm=TRUE) # get the value that demarcates the top threshold
+        Q = r > qua # filter raster for only values above that 
+        Q[Q==0]=NA # set all other values to NA
+        r*Q # multiply original raster by Q to zero out any values you dont want
+}
+
+sewage_top10 <- extremes(sewage_01,.90)
+
+sewage_top10[sewage_top10 == 0] <- NA
+
+
+sewage_80bin = sewage_01 > .80
+
+sewage_extreme = sewage_01 * sewage_80bin
+
+mapview(sewage_top10)
+
+plot(sewage_moreextreme)
+
+plot(sewage_top10)
+
+# not sur where the rest of this analysis went but her are the results:
+
+mmas_runoff <- st_read(file.path(driver_dir,"Presentation_Materials/Custom_Layers/mmas_most_affected_runoff.shp"))
+mmas_osds <- st_read(file.path(driver_dir,"Presentation_Materials/Custom_Layers/mmas_most_affected_osds.shp"))
+
+writeRaster(sewage_top10,
+            filename = file.path(data_dir,"sewage_top10.tif"))
 ```
 
 We can to assess overlap:
