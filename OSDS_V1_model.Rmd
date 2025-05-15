@@ -232,6 +232,8 @@ osds_2010_2014_IW <- oahu_2023_cl %>%
   mutate(Effluent_galpday_5yr_avg = total_Eff_toenv2010_2014 / (365*5)) %>% 
   st_transform(., crs = crs(ocean_mask))
 
+plot(osds_2010_2014_IW)
+
 max(osds_2010_2014_IW$Effluent_galpday_5yr_avg, na.rm = T) #539941.2
 min(osds_2010_2014_IW$Effluent_galpday_5yr_avg, na.rm = T) #
 mean(osds_2010_2014_IW$Effluent_galpday_5yr_avg, na.rm = T) #2716.339
@@ -488,7 +490,7 @@ max(kauai_2015_2019$Effluent) # 10815
 ### repeat for injection wells by themselves
 
 kauai_2010_2014_IW <- kauai_cl %>%
-  filter(year_calc < 2015)
+  filter(year_calc < 2015) %>% 
   filter(PermitType == "Injection Well") %>%
   mutate(years_active_2010_2014 = (2015 - year_calc) - (2010 - year_calc)) %>% 
   mutate(total_N_toenv2010_2014 = years_active_2010_2014 * 365 * Nitrogen_Flux) %>% 
@@ -588,33 +590,42 @@ rasterizePoints <- function(points,mask){
 # apply to points for different scenarios 
 
 oahu_2015_2019_eff <- rasterizePoints(osds_2015_2019_nad83,ocean_mask_oahu)
-#oahu_2015_2019_IWeff <- rasterizePoints(osds_2015_2019_IW,ocean_mask_oahu)
+oahu_IWeff <- rasterizePoints(osds_2015_2019_IW,ocean_mask_oahu)
 oahu_2010_2014_eff <- rasterizePoints(osds_2010_2014,ocean_mask_oahu)
-#oahu_2010_2014_IWeff <- rasterizePoints(osds_2010_2014_IW,ocean_mask_oahu)
+#oahu_2010_2014_IWeff <- rasterizePoints(osds_2010_2014_IW,ocean_mask_oahu) # the same
 
 
 par(mfrow = c(2,2))
 plot(oahu_2015_2019_eff)
-plot(oahu_2015_2019_IWeff)
+plot(oahu_IWeff)
 plot(oahu_2010_2014_eff)
-plot(oahu_2010_2014_IWeff)
+
+minmax(oahu_IWeff)
 
 # repeat with maui
 
 maui_2010_2014_eff <- rasterizePoints(mauinui_2010_2014,ocean_mask_maui)
-maui_2010_2014_IWeff <- rasterizePoints(mauinui_2010_2014_IW,ocean_mask_maui)
+maui_IWeff <- rasterizePoints(mauinui_2010_2014_IW,ocean_mask_maui)
 maui_2015_2019_eff <- rasterizePoints(mauinui_2015_2019, ocean_mask_maui)
-maui_2015_2019_IWeff <- rasterizePoints(mauinui_2015_2019_IW, ocean_mask_maui)
+#maui_2015_2019_IWeff <- rasterizePoints(mauinui_2015_2019_IW, ocean_mask_maui)
 
 par(mfrow = c(2,2))
 plot(maui_2010_2014_eff)
-plot(maui_2010_2014_IWeff)
+plot(maui_IWeff)
 plot(maui_2015_2019_eff)
-plot(maui_2015_2019_IWeff)
 
-#minmax(maui_2010_2014_eff)
 res(maui_2010_2014_eff)
 res(oahu_2010_2014_eff)
+
+
+# kauai
+kauai_2010_2014_eff <- rasterizePoints(kauai_2010_2014, ocean_mask_kauai)
+kauai_IWeff <- rasterizePoints(kauai_2010_2014_IW, ocean_mask_kauai)
+kauai_2015_2019_eff <- rasterizePoints(kauai_2015_2019, ocean_mask_kauai)
+
+plot(kauai_IWeff)
+plot(kauai_2010_2014_eff)
+plot(kauai_2015_2019_eff)
 ```
 
 ## Step 2: Apply focal statistics to estimate "sphere of impact" into nearshore
@@ -667,34 +678,37 @@ applyFocalStats_extractByMask <- function(raster,mask){
 # apply to oahu scenarios
 
 focStat_2015_2019 <- applyFocalStats_extractByMask(oahu_2015_2019_eff,ocean_mask_oahu)
-focStat_2015_2019_IW <- applyFocalStats_extractByMask(oahu_2015_2019_IWeff,ocean_mask_oahu)
+focStat_IW <- applyFocalStats_extractByMask(oahu_IWeff,ocean_mask_oahu)
 focStat_2010_2014 <- applyFocalStats_extractByMask(oahu_2010_2014_eff,ocean_mask_oahu)
-focStat_2010_2014_IW <- applyFocalStats_extractByMask(oahu_2010_2014_IWeff,ocean_mask_oahu)
+#focStat_2010_2014_IW <- applyFocalStats_extractByMask(oahu_2010_2014_IWeff,ocean_mask_oahu)
 
 
 par(mfrow = c(2,2))
 plot(focStat_2015_2019)
-plot(focStat_2015_2019_IW)
 plot(focStat_2010_2014)
-plot(focStat_2010_2014_IW)
+plot(focStat_IW)
 
 # maui scenarios
 
 maui_focStat_2010_2014 <- applyFocalStats_extractByMask(maui_2010_2014_eff, ocean_mask_maui)
-maui_focStat_2010_2014IW <- applyFocalStats_extractByMask(maui_2010_2014_IWeff, ocean_mask_maui)
+maui_focStat_IW <- applyFocalStats_extractByMask(maui_IWeff, ocean_mask_maui)
 maui_focStat_2015_2019 <- applyFocalStats_extractByMask(maui_2015_2019_eff, ocean_mask_maui)
-maui_focStat_2015_2019IW <- applyFocalStats_extractByMask(maui_2015_2019_IWeff, ocean_mask_maui)
+#maui_focStat_2015_2019IW <- applyFocalStats_extractByMask(maui_2015_2019_IWeff, ocean_mask_maui)
 
 
 par(mfrow = c(2,2))
 plot(maui_focStat_2010_2014)
-plot(maui_focStat_2010_2014IW)
 plot(maui_focStat_2015_2019)
-plot(maui_focStat_2015_2019IW)
+plot(maui_focStat_IW)
 
 minmax(maui_focStat_2010_2014)
-
 minmax(maui_focStat_2015_2019)
+
+
+# kauai scenarios
+kauai_focStat_2010_2014 <- applyFocalStats_extractByMask(kauai_2010_2014_eff, ocean_mask_kauai)
+kauai_focStat_2015_2019 <- applyFocalStats_extractByMask(kauai_2015_2019_eff, ocean_mask_kauai)
+kauai_focStat_IW <- applyFocalStats_extractByMask(kauai_IWeff, ocean_mask_kauai)
 
 ```
 
@@ -719,8 +733,11 @@ source(here("workflow/offshoreDecay.R")) # identical to all other decay for LBSP
 euc_distance <- rast(file.path(data_dir,"DistFromShore_Euc_2023.tif"))
 euc_distance_oahu <- terra::crop(euc_distance, ocean_mask_oahu, mask = T)
 euc_distance_maui <- terra::crop(euc_distance, ocean_mask_maui, mask = T)
+euc_distance_kauai <- terra::crop(euc_distance, ocean_mask_kauai, mask = T)
+
 plot(euc_distance_oahu)
 plot(euc_distance_maui)
+plot(euc_distance_kauai)
 
 # apply to nearshore rasters - Oahu
   
@@ -729,8 +746,8 @@ final_osds_2015_2019[final_osds_2015_2019 == 0] <- NA
 minmax(final_osds_2015_2019)
 
 
-final_osds_2015_2019_IW <- offshore_decay(focStat_2015_2019_IW,euc_distance_oahu)
-final_osds_2015_2019_IW[final_osds_2015_2019_IW == 0] <- NA
+finaloahu_IW <- offshore_decay(focStat_IW,euc_distance_oahu)
+finaloahu_IW[finaloahu_IW == 0] <- NA
 
 
 final_osds_2010_2014 <- offshore_decay(focStat_2010_2014,euc_distance_oahu)
@@ -738,15 +755,11 @@ final_osds_2010_2014[final_osds_2010_2014 == 0] <- NA
 minmax(final_osds_2010_2014)
 
 
-final_osds_2010_2014_IW <- offshore_decay(focStat_2010_2014_IW,euc_distance_oahu)
-final_osds_2010_2014_IW[final_osds_2010_2014_IW == 0] <- NA
-
-
 par(mfrow = c(2,2))
 plot(final_osds_2015_2019)
-plot(final_osds_2015_2019_IW)
+plot(finaloahu_IW)
 plot(final_osds_2010_2014)
-plot(final_osds_2010_2014_IW)
+
 
 minmax(final_osds_2010_2014)
 minmax(final_osds_2015_2019)
@@ -756,27 +769,37 @@ minmax(final_osds_2015_2019)
 maui_final_osds_2010_2014 <- offshore_decay(maui_focStat_2010_2014,euc_distance_maui)
 maui_final_osds_2010_2014[maui_final_osds_2010_2014 == 0] <- NA # not sure this is necessary
 
-
-maui_final_osds_2010_2014_IW <- offshore_decay(maui_focStat_2010_2014IW,euc_distance_maui)
-maui_final_osds_2010_2014_IW[maui_final_osds_2010_2014_IW == 0] <- NA
-
 maui_final_osds_2015_2019 <- offshore_decay(maui_focStat_2015_2019,euc_distance_maui)
 maui_final_osds_2015_2019[maui_final_osds_2015_2019 == 0] <- NA
 
-
-
-maui_final_osds_2015_2019_IW <- offshore_decay(maui_focStat_2015_2019IW,euc_distance_maui)
-maui_final_osds_2015_2019_IW[maui_final_osds_2015_2019_IW == 0] <- NA
+maui_final_IW <- offshore_decay(maui_focStat_IW,euc_distance_maui)
+maui_final_IW[maui_final_IW == 0] <- NA
 
 
 par(mfrow = c(2,2))
 plot(maui_final_osds_2010_2014)
-plot(maui_final_osds_2015_2019_IW)
-plot(maui_final_osds_2010_2014_IW)
+plot(maui_final_IW)
 plot(maui_final_osds_2015_2019)
 
 minmax(maui_final_osds_2010_2014)
 minmax(maui_final_osds_2015_2019)
+
+
+# apply to kauai
+
+kauai_final_osds_2010_2014 <- offshore_decay(kauai_focStat_2010_2014,euc_distance_kauai)
+kauai_final_osds_2010_2014[kauai_final_osds_2010_2014 == 0] <- NA # not sure this is necessary
+
+kauai_final_osds_2015_2019 <- offshore_decay(kauai_focStat_2015_2019,euc_distance_kauai)
+kauai_final_osds_2015_2019[kauai_final_osds_2015_2019 == 0] <- NA
+
+kauai_final_IW <- offshore_decay(kauai_focStat_IW,euc_distance_kauai)
+kauai_final_IW[kauai_final_IW == 0] <- NA
+
+par(mfrow = c(2,2))
+plot(kauai_final_osds_2010_2014)
+plot(kauai_final_IW)
+plot(kauai_final_osds_2015_2019)
 
 ```
 
@@ -791,21 +814,14 @@ writeRaster(
 )
 
 writeRaster(
-  final_osds_2015_2019_IW,
-  filename = here("outputs/Oahu_OSDS_2015_2019_IWeff.tif"),
-  overwrite = T
-)
-
-writeRaster(
   final_osds_2010_2014,
   filename = here("outputs/Oahu_OSDS_2010_2014_eff.tif"),
   overwrite = T
 )
 
-
 writeRaster(
-  final_osds_2010_2014_IW,
-  filename = here("outputs/Oahu_OSDS_2010_2014_IWeff.tif"),
+  finaloahu_IW,
+  filename = here("outputs/Oahu_IW_eff.tif"),
   overwrite = T
 )
 
@@ -819,8 +835,8 @@ writeRaster(
 )
 
 writeRaster(
-  maui_final_osds_2010_2014_IW,
-  filename = here("outputs/Maui_OSDS_2010_2014_IWeff.tif"),
+  maui_final_IW,
+  filename = here("outputs/Maui_IW_eff.tif"),
   overwrite = T
 )
 
@@ -830,12 +846,26 @@ writeRaster(
   overwrite = T
 )
 
+# kauai
+
+
 writeRaster(
-  maui_final_osds_2015_2019_IW,
-  filename = here("outputs/Maui_OSDS_2015_2019_IWeff.tif"),
+  kauai_final_osds_2010_2014,
+  filename = here("outputs/Kauai_OSDS_2010_2014_eff.tif"),
   overwrite = T
 )
 
+writeRaster(
+  kauai_final_IW,
+  filename = here("outputs/Kauai_IW_eff.tif"),
+  overwrite = T
+)
+
+writeRaster(
+  kauai_final_osds_2015_2019,
+  filename = here("outputs/Kauai_OSDS_2015_2019_eff.tif"),
+  overwrite = T
+)
 
 ```
 
