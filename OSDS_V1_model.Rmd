@@ -142,7 +142,7 @@ hist(log(oahu_2023$Effluent) , breaks=40 , col=rgb(0.2,0.8,0.5,0.5) , border=F ,
 
 
 
-osds_2015_2019 <- oahu_2023_cl %>% 
+oahu_2015_2019 <- oahu_2023_cl %>% 
   filter(Year < 2020) %>% 
   filter(PermitType != "Injection Well") %>% 
   mutate(year_calc = as.numeric(Year)) %>% 
@@ -159,7 +159,7 @@ osds_2015_2019 <- oahu_2023_cl %>%
 #mapview(osds_2015_2019) # where did all the pearl harbor ones go?
 
 
-osds_post2020 <- oahu_2023_cl %>% 
+oahu_post2020 <- oahu_2023_cl %>% 
   filter(Year > 2020)
 
 # recheck stats after year and type filters to make sure they changed
@@ -170,15 +170,15 @@ osds_post2020 <- oahu_2023_cl %>%
 # Layout to split the screen
 layout(mat = matrix(c(1,2),2,1, byrow=TRUE),  height = c(1,8))
 par(mar=c(0, 3.1, 1.1, 2.1))
-boxplot(log(osds_2015_2019$Effluent) , horizontal=TRUE , ylim=c(4,10), xaxt="n" , col=rgb(0.8,0.8,0,0.5) , frame=F)
+boxplot(log(oahu_2015_2019$Effluent) , horizontal=TRUE , ylim=c(4,10), xaxt="n" , col=rgb(0.8,0.8,0,0.5) , frame=F)
 par(mar=c(4, 3.1, 1.1, 2.1))
-hist(log(osds_2015_2019$Effluent) , breaks=40 , col=rgb(0.2,0.8,0.5,0.5) , border=F , main="" , xlab="Log of Daily Effluent for Oahu Locations, 2015 - 2019", xlim=c(4,10))
+hist(log(oahu_2015_2019$Effluent) , breaks=40 , col=rgb(0.2,0.8,0.5,0.5) , border=F , main="" , xlab="Log of Daily Effluent for Oahu Locations, 2015 - 2019", xlim=c(4,10))
 
 
-max(osds_2015_2019$Effluent, na.rm = T) #14150
-min(osds_2015_2019$Effluent, na.rm = T) #39
-mean(osds_2015_2019$Effluent, na.rm = T) # 441
-median(osds_2015_2019$Effluent, na.rm = T) #420
+max(oahu_2015_2019$Effluent, na.rm = T) #14150
+min(oahu_2015_2019$Effluent, na.rm = T) #39
+mean(oahu_2015_2019$Effluent, na.rm = T) # 441
+median(oahu_2015_2019$Effluent, na.rm = T) #420
 
 # questions - does Effluent scale with N or P flux? Plot, and see read me for documentation
 # par(mfrow = c(1,2))
@@ -206,7 +206,7 @@ min(oahu_IW$Effluent, na.rm = T)
 mean(oahu_IW$Effluent, na.rm = T) # 28208.1
 median(oahu_IW$Effluent, na.rm = T) #3488.114
     
-nastest <- osds_2015_2019_IW[is.na(osds_2015_2019_IW$Year),]# all nas for year are injection wells so this filter works
+nastest <- oahu_IW[is.na(oahu_IW$Year),]# all nas for year are injection wells so this filter works
 
 oahu_2010_2014 <- oahu_2023_cl %>% 
   filter(Year < 2015) %>% 
@@ -223,10 +223,10 @@ oahu_2010_2014 <- oahu_2023_cl %>%
   st_transform(., crs = crs(ocean_mask))
 
 
-max(osds_2010_2014$Effluent_galpday_5yr_avg, na.rm = T) #14150
-min(osds_2010_2014$Effluent_galpday_5yr_avg, na.rm = T) #60
-mean(osds_2010_2014$Effluent_galpday_5yr_avg, na.rm = T) #436
-median(osds_2010_2014$Effluent_galpday_5yr_avg, na.rm = T) #420
+max(oahu_2010_2014$Effluent_galpday_5yr_avg, na.rm = T) #14150
+min(oahu_2010_2014$Effluent_galpday_5yr_avg, na.rm = T) #60
+mean(oahu_2010_2014$Effluent_galpday_5yr_avg, na.rm = T) #436 - oahu has more
+median(oahu_2010_2014$Effluent_galpday_5yr_avg, na.rm = T) #420
 
 
 # osds_2010_2014_IW <- oahu_2023_cl %>% 
@@ -698,7 +698,7 @@ mapview(hi_IW)
 # read in ocean mask and use extent of oahu and maui points to crop
 ocean_mask <- terra::rast(file.path(data_dir,"OceanMask_LBSP_post2018.tif")) #
 
-osds_2015_2019_nad83 <- st_transform(osds_2015_2019, crs = crs(ocean_mask))
+oahu_2015_2019_nad83 <- st_transform(oahu_2015_2019, crs = crs(ocean_mask))
 
 maui_osds_nad83 <- st_transform(mauinui_2023, crs = crs(ocean_mask))
 
@@ -754,11 +754,16 @@ plot(ocean_mask_hi)
 
 rasterizePoints <- function(points,mask){
   
-
+  #points <- mauinui_IW
+  #mask <- ocean_mask_maui
   # create raster template and rasterize points with terra
   r_om <- rast(mask)
+  #values(r_om) <- 1
   #rasterize points, using sum to aggregate effluent 
   osds_raster <- rasterize(vect(points), r_om, field = "Effluent_galpday_5yr_avg", fun = "sum", na.rm = T)
+  
+  #plot(r_om, col = "blue")
+  #plot(ocean_mask_maui, add = T)
   
   return(osds_raster)
   
@@ -766,9 +771,9 @@ rasterizePoints <- function(points,mask){
 
 # apply to points for different scenarios 
 
-oahu_2015_2019_eff <- rasterizePoints(osds_2015_2019_nad83,ocean_mask_oahu)
-oahu_IWeff <- rasterizePoints(osds_2015_2019_IW,ocean_mask_oahu)
-oahu_2010_2014_eff <- rasterizePoints(osds_2010_2014,ocean_mask_oahu)
+oahu_2015_2019_eff <- rasterizePoints(oahu_2015_2019_nad83,ocean_mask_oahu)
+oahu_IWeff <- rasterizePoints(oahu_IW,ocean_mask_oahu)
+oahu_2010_2014_eff <- rasterizePoints(oahu_2010_2014,ocean_mask_oahu)
 #oahu_2010_2014_IWeff <- rasterizePoints(osds_2010_2014_IW,ocean_mask_oahu) # the same
 
 
@@ -782,7 +787,7 @@ minmax(oahu_IWeff)
 # repeat with maui
 
 maui_2010_2014_eff <- rasterizePoints(mauinui_2010_2014,ocean_mask_maui)
-maui_IWeff <- rasterizePoints(mauinui_2010_2014_IW,ocean_mask_maui)
+maui_IWeff <- rasterizePoints(mauinui_IW,ocean_mask_maui) # this one is coming out pretty strange
 maui_2015_2019_eff <- rasterizePoints(mauinui_2015_2019, ocean_mask_maui)
 #maui_2015_2019_IWeff <- rasterizePoints(mauinui_2015_2019_IW, ocean_mask_maui)
 
@@ -797,7 +802,7 @@ res(oahu_2010_2014_eff)
 
 # kauai
 kauai_2010_2014_eff <- rasterizePoints(kauai_2010_2014, ocean_mask_kauai)
-kauai_IWeff <- rasterizePoints(kauai_2010_2014_IW, ocean_mask_kauai)
+kauai_IWeff <- rasterizePoints(kauai_IW, ocean_mask_kauai)
 kauai_2015_2019_eff <- rasterizePoints(kauai_2015_2019, ocean_mask_kauai)
 
 plot(kauai_IWeff)
@@ -1021,7 +1026,7 @@ writeRaster(
 )
 
 writeRaster(
-  finaloahu_IW,
+  final_IW,
   filename = here("outputs/AllIsl_IW_eff.tif"),
   overwrite = T
 )
