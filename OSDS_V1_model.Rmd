@@ -56,6 +56,8 @@ ocean_mask <- terra::rast(file.path(data_dir,"OceanMask_LBSP_post2018.tif"))
 This markdown walks through the steps and code for estimating the relative impact
 of OSDS on the nearshore of the Main Hawaiian Islands.
 
+Important note: No ability to assess difference any upgrades if original osds points were replaced by upgraded points FOR ALL YEARS they exist. Our only comparison would be to Joey's layer. Would be cool to also make sure any reductions we're seeing might be influenced by upgrades.
+
 Input data needed:
 
 -   Point locations of all functional OSDS and the year they were
@@ -81,7 +83,7 @@ oahu_2023 <- oahu_2023 %>%
 oahu_empty <- oahu_2023 %>% 
   filter(empty == TRUE) # note these are empty to Julia
 
-# clean out empty geometries
+# clean out empty geometries and remove characters from year
 oahu_2023_cl <- oahu_2023 %>% 
   filter(empty == FALSE) %>% 
   mutate(Year = ifelse(Year == "pre 2009", "2008", Year))
@@ -115,13 +117,13 @@ oahu_nas <- oahu_2023_cl %>%
   filter(is.na(Effluent)) # 5
 
 
-mapview(zeros, col.regions = "blue")+
-  mapview(oahu_nas, col.regions = "green")
+# mapview(zeros, col.regions = "blue")+
+#   mapview(oahu_nas, col.regions = "green")
 
 injection_wells <- oahu_2023_cl %>% 
   filter(PermitType == "Injection Well") 
 
-mapview(injection_wells)
+#mapview(injection_wells)
 
 layout(mat = matrix(c(1,2),2,1, byrow=TRUE),  height = c(1,8))
 par(mar=c(0, 3.1, 1.1, 2.1))
@@ -143,14 +145,18 @@ hist(log(oahu_2023$Effluent) , breaks=40 , col=rgb(0.2,0.8,0.5,0.5) , border=F ,
 osds_2015_2019 <- oahu_2023_cl %>% 
   filter(Year < 2020) %>% 
   filter(PermitType != "Injection Well") %>% 
-  mutate(Year = as.numeric(Year)) %>% 
-  mutate(years_active_2015_2019 = (2020 - Year) - (2015 - Year)) %>% 
+  mutate(year_calc = as.numeric(Year)) %>% 
+  mutate(years_active_2015_2019 = case_when(
+    year_calc >= 2015 ~ 2020 - year_calc,
+    year_calc < 2015 ~ (2020 - year_calc) - (2015 - year_calc),
+    TRUE ~ NA
+  )) %>% 
   mutate(total_N_toenv2015_2019 = years_active_2015_2019 * 365 * Nitrogen_Flux) %>% 
   mutate(total_Eff_toenv2025_2019 = years_active_2015_2019 * 365 * Effluent) %>% 
   mutate(Nflux_kgpday_5yr_avg = total_N_toenv2015_2019 / (365 *5)) %>%
   mutate(Effluent_galpday_5yr_avg = total_Eff_toenv2025_2019 / (365*5))
 
-mapview(osds_2015_2019) # where did all the pearl harbor ones go?
+#mapview(osds_2015_2019) # where did all the pearl harbor ones go?
 
 
 osds_post2020 <- oahu_2023_cl %>% 
@@ -171,42 +177,45 @@ hist(log(osds_2015_2019$Effluent) , breaks=40 , col=rgb(0.2,0.8,0.5,0.5) , borde
 
 max(osds_2015_2019$Effluent, na.rm = T) #14150
 min(osds_2015_2019$Effluent, na.rm = T) #39
-mean(osds_2015_2019$Effluent, na.rm = T) # 582
-median(osds_2015_2019$Effluent, na.rm = T) #400
+mean(osds_2015_2019$Effluent, na.rm = T) # 441
+median(osds_2015_2019$Effluent, na.rm = T) #420
 
 # questions - does Effluent scale with N or P flux? Plot, and see read me for documentation
-par(mfrow = c(1,2))
-plot(osds_2015_2019$Effluent, osds_2015_2019$Nitrogen_Flux)
-plot(osds_2015_2019$Effluent, osds_2015_2019$Phosphorous_Flux)
+# par(mfrow = c(1,2))
+# plot(oahu_2015_2019$Effluent, oahu_2015_2019$Nitrogen_Flux)
+# plot(oahu_2015_2019$Effluent, oahu_2015_2019$Phosphorous_Flux)
 
 # create versions of the points for other scenarios: with injection wells, and for previous time period with and without injection wells. Repeat summary statistics for older data
 
 
-osds_2015_2019_IW <- oahu_2023_cl %>% 
+oahu_IW <- oahu_2023_cl %>% 
   filter(Year < 2020 | is.na(Year)) %>% # this grabs the iws
   mutate(Year = ifelse(is.na(Year),2009,Year)) %>%  # so we can count iws
   filter(PermitType == "Injection Well") %>% 
   mutate(Year = as.numeric(Year)) %>% 
-  mutate(years_active_2015_2019 = (2020 - Year) - (2015 - Year)) %>% 
-  mutate(total_N_toenv2015_2019 = years_active_2015_2019 * 365 * Nitrogen_Flux) %>% 
-  mutate(total_Eff_toenv2025_2019 = years_active_2015_2019 * 365 * Effluent) %>% 
-  mutate(Nflux_kgpday_5yr_avg = total_N_toenv2015_2019 / (365 *5)) %>%
-  mutate(Effluent_galpday_5yr_avg = total_Eff_toenv2025_2019 / (365*5)) %>% 
+  # mutate(years_active_2015_2019 = (2020 - Year) - (2015 - Year)) %>%
+  # mutate(total_N_toenv2015_2019 = years_active_2015_2019 * 365 * Nitrogen_Flux) %>%
+  # mutate(total_Eff_toenv2015_2019 = years_active_2015_2019 * 365 * Effluent) %>%
+  # mutate(Nflux_kgpday_5yr_avg = total_N_toenv2015_2019 / (365 *5)) %>%
+  mutate(Effluent_galpday_5yr_avg = Effluent) %>%  
   st_transform(., crs = crs(ocean_mask))
 
 
-max(osds_2015_2019_IW$Effluent, na.rm = T) #539941.2
-min(osds_2015_2019_IW$Effluent, na.rm = T) 
-mean(osds_2015_2019_IW$Effluent, na.rm = T) # 28208.1
-median(osds_2015_2019_IW$Effluent, na.rm = T) #3488.114
+max(oahu_IW$Effluent, na.rm = T) #539941.2
+min(oahu_IW$Effluent, na.rm = T) 
+mean(oahu_IW$Effluent, na.rm = T) # 28208.1
+median(oahu_IW$Effluent, na.rm = T) #3488.114
     
 nastest <- osds_2015_2019_IW[is.na(osds_2015_2019_IW$Year),]# all nas for year are injection wells so this filter works
 
-osds_2010_2014 <- oahu_2023_cl %>% 
+oahu_2010_2014 <- oahu_2023_cl %>% 
   filter(Year < 2015) %>% 
   filter(PermitType != "Injection Well") %>% 
-  mutate(Year = as.numeric(Year)) %>% 
-  mutate(years_active_2010_2014 = (2015 - Year) - (2010 - Year)) %>% 
+  mutate(year_calc = as.numeric(Year)) %>% 
+  mutate(years_active_2010_2014 = case_when(
+    year_calc > 2010 ~ (2015 - year_calc),
+    year_calc <= 2010 ~ (2015 - year_calc) - (2010 - year_calc),
+    TRUE ~ NA)) %>% 
   mutate(total_N_toenv2010_2014 = years_active_2010_2014 * 365 * Nitrogen_Flux) %>% 
   mutate(total_Eff_toenv2010_2014 = years_active_2010_2014 * 365 * Effluent) %>% 
   mutate(Nflux_kgpday_5yr_avg = total_N_toenv2010_2014 / (365 *5)) %>%
@@ -216,28 +225,28 @@ osds_2010_2014 <- oahu_2023_cl %>%
 
 max(osds_2010_2014$Effluent_galpday_5yr_avg, na.rm = T) #14150
 min(osds_2010_2014$Effluent_galpday_5yr_avg, na.rm = T) #60
-mean(osds_2010_2014$Effluent_galpday_5yr_avg, na.rm = T) #441.0152
+mean(osds_2010_2014$Effluent_galpday_5yr_avg, na.rm = T) #436
 median(osds_2010_2014$Effluent_galpday_5yr_avg, na.rm = T) #420
 
 
-osds_2010_2014_IW <- oahu_2023_cl %>% 
-  filter(Year < 2015 | is.na(Year)) %>% # this grabs the iws
-  mutate(Year = ifelse(is.na(Year),2009,Year)) %>% # this just allows us to account IW for all POI
-  filter(PermitType == "Injection Well") %>% 
-  mutate(Year = as.numeric(Year)) %>% 
-  mutate(years_active_2010_2014 = (2015 - Year) - (2010 - Year)) %>% 
-  mutate(total_N_toenv2010_2014 = years_active_2010_2014 * 365 * Nitrogen_Flux) %>% 
-  mutate(total_Eff_toenv2010_2014 = years_active_2010_2014 * 365 * Effluent) %>% 
-  mutate(Nflux_kgpday_5yr_avg = total_N_toenv2010_2014 / (365 *5)) %>%
-  mutate(Effluent_galpday_5yr_avg = total_Eff_toenv2010_2014 / (365*5)) %>% 
-  st_transform(., crs = crs(ocean_mask))
-
-plot(osds_2010_2014_IW)
-
-max(osds_2010_2014_IW$Effluent_galpday_5yr_avg, na.rm = T) #539941.2
-min(osds_2010_2014_IW$Effluent_galpday_5yr_avg, na.rm = T) #
-mean(osds_2010_2014_IW$Effluent_galpday_5yr_avg, na.rm = T) #2716.339
-median(osds_2010_2014_IW$Effluent_galpday_5yr_avg, na.rm = T) #420
+# osds_2010_2014_IW <- oahu_2023_cl %>% 
+#   filter(Year < 2015 | is.na(Year)) %>% # this grabs the iws
+#   mutate(Year = ifelse(is.na(Year),2009,Year)) %>% # this just allows us to account IW for all POI
+#   filter(PermitType == "Injection Well") %>% 
+#   mutate(Year = as.numeric(Year)) %>% 
+#   mutate(years_active_2010_2014 = (2015 - Year) - (2010 - Year)) %>% 
+#   mutate(total_N_toenv2010_2014 = years_active_2010_2014 * 365 * Nitrogen_Flux) %>% 
+#   mutate(total_Eff_toenv2010_2014 = years_active_2010_2014 * 365 * Effluent) %>% 
+#   mutate(Nflux_kgpday_5yr_avg = total_N_toenv2010_2014 / (365 *5)) %>%
+#   mutate(Effluent_galpday_5yr_avg = total_Eff_toenv2010_2014 / (365*5)) %>% 
+#   st_transform(., crs = crs(ocean_mask))
+# 
+# plot(osds_2010_2014_IW)
+# 
+# max(osds_2010_2014_IW$Effluent_galpday_5yr_avg, na.rm = T) #539941.2
+# min(osds_2010_2014_IW$Effluent_galpday_5yr_avg, na.rm = T) #
+# mean(osds_2010_2014_IW$Effluent_galpday_5yr_avg, na.rm = T) #2716.339
+# median(osds_2010_2014_IW$Effluent_galpday_5yr_avg, na.rm = T) #420
 
 
 #mapview(osds_2015_2019)
@@ -348,8 +357,11 @@ maui_2023_cl <- mauinui_2023 %>%
 mauinui_2010_2014 <- maui_2023_cl %>% 
   filter(Year < 2015) %>% 
   filter(PermitType != "Injection Well") %>% 
-  mutate(Year = as.numeric(Year)) %>% 
-  mutate(years_active_2010_2014 = (2015 - Year) - (2010 - Year)) %>% 
+  mutate(year_calc = as.numeric(Year)) %>% 
+  mutate(years_active_2010_2014 = case_when(
+    year_calc > 2010 ~ (2015 - year_calc),
+    year_calc <= 2010 ~ (2015 - year_calc) - (2010 - year_calc),
+    TRUE ~ NA)) %>% 
   mutate(total_N_toenv2010_2014 = years_active_2010_2014 * 365 * Nitrogen_Flux) %>% 
   mutate(total_Eff_toenv2010_2014 = years_active_2010_2014 * 365 * Effluent) %>% 
   mutate(Nflux_kgpday_5yr_avg = total_N_toenv2010_2014 / (365 *5)) %>%
@@ -359,53 +371,59 @@ mauinui_2010_2014 <- maui_2023_cl %>%
 mean(mauinui_2010_2014$Effluent) #682.72
 max(mauinui_2010_2014$Effluent) #27000
 
-mauinui_2010_2014_IW <- maui_2023_cl %>% 
-  filter(Year < 2015) %>% 
-  mutate(Year = ifelse(is.na(Year),2009,Year)) %>% # this just allows us to account IW for all POI
+mauinui_IW <- maui_2023_cl %>% 
+  #filter(Year < 2015) %>% 
+  mutate(Year = ifelse(Year == "pre2009",2009,Year)) %>% # this just allows us to account IW for all POI
   filter(PermitType == "Injection Well") %>% 
-  mutate(Year = as.numeric(Year)) %>% 
-  mutate(years_active_2010_2014 = (2015 - Year) - (2010 - Year)) %>% 
-  mutate(total_N_toenv2010_2014 = years_active_2010_2014 * 365 * Nitrogen_Flux) %>% 
-  mutate(total_Eff_toenv2010_2014 = years_active_2010_2014 * 365 * Effluent) %>% 
+  mutate(Year = as.numeric(Year)) %>%
+  mutate(years_active_2010_2014 = (2015 - Year) - (2010 - Year)) %>%
+  mutate(total_N_toenv2010_2014 = years_active_2010_2014 * 365 * Nitrogen_Flux) %>%
+  mutate(total_Eff_toenv2010_2014 = years_active_2010_2014 * 365 * Effluent) %>%
   mutate(Nflux_kgpday_5yr_avg = total_N_toenv2010_2014 / (365 *5)) %>%
-  mutate(Effluent_galpday_5yr_avg = total_Eff_toenv2010_2014 / (365*5)) %>%
+  mutate(Effluent_galpday_5yr_avg = total_Eff_toenv2010_2014) %>%
   st_transform(., crs = crs(ocean_mask))
 
-mean(mauinui_2010_2014_IW$Effluent) #6590.429
-max(mauinui_2010_2014_IW$Effluent) #18004
+mean(mauinui_IW$Effluent) #6590.429
+max(mauinui_IW$Effluent) #18004
   
+mapview(mauinui_IW)
 
 mauinui_2015_2019 <- maui_2023_cl %>% 
   filter(Year < 2020) %>% 
   filter(PermitType != "Injection Well") %>% 
-  mutate(Year = as.numeric(Year)) %>% 
-  mutate(years_active_2010_2014 = (2020 - Year) - (2015 - Year)) %>% 
-  mutate(total_N_toenv2010_2014 = years_active_2010_2014 * 365 * Nitrogen_Flux) %>% 
-  mutate(total_Eff_toenv2010_2014 = years_active_2010_2014 * 365 * Effluent) %>% 
-  mutate(Nflux_kgpday_5yr_avg = total_N_toenv2010_2014 / (365 *5)) %>%
-  mutate(Effluent_galpday_5yr_avg = total_Eff_toenv2010_2014 / (365*5)) %>%
+  mutate(year_calc = as.numeric(Year)) %>% 
+  mutate(years_active_2015_2019 = case_when(
+    year_calc >= 2015 ~ 2020 - year_calc,
+    year_calc < 2015 ~ (2020 - year_calc) - (2015 - year_calc),
+    TRUE ~ NA
+  )) %>% 
+  mutate(total_N_toenv2015_2019 = years_active_2015_2019 * 365 * Nitrogen_Flux) %>% 
+  mutate(total_Eff_toenv2015_2019 = years_active_2015_2019 * 365 * Effluent) %>% 
+  mutate(Nflux_kgpday_5yr_avg = total_N_toenv2015_2019 / (365 *5)) %>%
+  mutate(Effluent_galpday_5yr_avg = total_Eff_toenv2015_2019 / (365*5)) %>%
   st_transform(., crs = crs(ocean_mask))
 
 mean(mauinui_2015_2019$Effluent) # 607
-max(mauinui_2015_2019$Effluent)
+max(mauinui_2015_2019$Effluent) #27000
 
-mauinui_2015_2019_IW <- maui_2023_cl %>% 
-  filter(Year < 2020) %>% 
-  mutate(Year = ifelse(is.na(Year),2009,Year)) %>% # this just allows us to account IW for all POI
-  filter(PermitType == "Injection Well") %>% 
-  mutate(Year = as.numeric(Year)) %>% 
-  mutate(years_active_2010_2014 = (2020 - Year) - (2015 - Year)) %>% 
-  mutate(total_N_toenv2010_2014 = years_active_2010_2014 * 365 * Nitrogen_Flux) %>% 
-  mutate(total_Eff_toenv2010_2014 = years_active_2010_2014 * 365 * Effluent) %>% 
-  mutate(Nflux_kgpday_5yr_avg = total_N_toenv2010_2014 / (365 *5)) %>%
-  mutate(Effluent_galpday_5yr_avg = total_Eff_toenv2010_2014 / (365*5)) %>%
-  st_transform(., crs = crs(ocean_mask))
 
-mean(mauinui_2015_2019_IW$Effluent) #6590.429
-max(mauinui_2015_2019_IW$Effluent) #18004
+# mauinui_2015_2019_IW <- maui_2023_cl %>% 
+#   filter(Year < 2020) %>% 
+#   mutate(Year = ifelse(is.na(Year),2009,Year)) %>% # this just allows us to account IW for all POI
+#   filter(PermitType == "Injection Well") %>% 
+#   mutate(Year = as.numeric(Year)) %>% 
+#   mutate(years_active_2010_2014 = (2020 - Year) - (2015 - Year)) %>% 
+#   mutate(total_N_toenv2010_2014 = years_active_2010_2014 * 365 * Nitrogen_Flux) %>% 
+#   mutate(total_Eff_toenv2010_2014 = years_active_2010_2014 * 365 * Effluent) %>% 
+#   mutate(Nflux_kgpday_5yr_avg = total_N_toenv2010_2014 / (365 *5)) %>%
+#   mutate(Effluent_galpday_5yr_avg = total_Eff_toenv2010_2014 / (365*5)) %>%
+#   st_transform(., crs = crs(ocean_mask))
+# 
+# mean(mauinui_2015_2019_IW$Effluent) #6590.429
+# max(mauinui_2015_2019_IW$Effluent) #18004
 ```
 
-### Kauai and Hawaii Dataset
+### Kauai Dataset
 
 ```{r}
 
@@ -463,7 +481,10 @@ kauai_cl <- kauai_2023 %>%  filter(!is.na(Effluent)) %>%
 kauai_2010_2014 <- kauai_cl %>% 
   filter(year_calc < 2015) %>% 
   filter(PermitType != "Injection Well") %>% 
-  mutate(years_active_2010_2014 = (2015 - year_calc) - (2010 - year_calc)) %>% 
+  mutate(years_active_2010_2014 = case_when(
+    year_calc > 2010 ~ (2015 - year_calc),
+    year_calc <= 2010 ~ (2015 - year_calc) - (2010 - year_calc),
+    TRUE ~ NA)) %>% 
   mutate(total_N_toenv2010_2014 = years_active_2010_2014 * 365 * Nitrogen_Flux) %>% 
   mutate(total_Eff_toenv2010_2014 = years_active_2010_2014 * 365 * Effluent) %>% 
   mutate(Nflux_kgpday_5yr_avg = total_N_toenv2010_2014 / (365 *5)) %>%
@@ -476,7 +497,11 @@ max(kauai_2010_2014$Effluent) #10080
 kauai_2015_2019 <- kauai_cl %>% 
   filter(year_calc < 2020) %>% 
   filter(PermitType != "Injection Well") %>% 
-  mutate(years_active_2015_2019 = (2020 - year_calc) - (2015 - year_calc)) %>% 
+  mutate(years_active_2015_2019 = case_when(
+    year_calc >= 2015 ~ 2020 - year_calc,
+    year_calc < 2015 ~ (2020 - year_calc) - (2015 - year_calc),
+    TRUE ~ NA
+  )) %>% 
   mutate(total_N_toenv2015_2019 = years_active_2015_2019 * 365 * Nitrogen_Flux) %>% 
   mutate(total_Eff_toenv2015_2019 = years_active_2015_2019 * 365 * Effluent) %>% 
   mutate(Nflux_kgpday_5yr_avg = total_N_toenv2015_2019 / (365 *5)) %>%
@@ -489,32 +514,173 @@ max(kauai_2015_2019$Effluent) # 10815
 
 ### repeat for injection wells by themselves
 
-kauai_2010_2014_IW <- kauai_cl %>%
+kauai_IW <- kauai_cl %>%
   filter(year_calc < 2015) %>% 
   filter(PermitType == "Injection Well") %>%
-  mutate(years_active_2010_2014 = (2015 - year_calc) - (2010 - year_calc)) %>% 
+  mutate(years_active_2010_2014 = case_when(
+    year_calc > 2010 ~ (2015 - year_calc),
+    year_calc <= 2010 ~ (2015 - year_calc) - (2010 - year_calc),
+    TRUE ~ NA)) %>% 
   mutate(total_N_toenv2010_2014 = years_active_2010_2014 * 365 * Nitrogen_Flux) %>% 
   mutate(total_Eff_toenv2010_2014 = years_active_2010_2014 * 365 * Effluent) %>% 
   mutate(Nflux_kgpday_5yr_avg = total_N_toenv2010_2014 / (365 *5)) %>%
   mutate(Effluent_galpday_5yr_avg = total_Eff_toenv2010_2014 / (365*5)) %>%
   st_transform(., crs = crs(ocean_mask))
 
-mean(kauai_2010_2014_IW$Effluent) # 87436
-max(kauai_2010_2014_IW$Effluent) # 539228
+# mean(kauai_2010_2014_IW$Effluent) # 87436
+# max(kauai_2010_2014_IW$Effluent) # 539228
 
-kauai_2015_2019_IW <- kauai_cl %>%
-  filter(year_calc < 2020) %>% 
-  filter(PermitType == "Injection Well") %>% 
-  mutate(years_active_2015_2019 = (2020 - year_calc) - (2015 - year_calc)) %>% 
+# kauai_2015_2019_IW <- kauai_cl %>%
+#   filter(year_calc < 2020) %>% 
+#   filter(PermitType == "Injection Well") %>% 
+#   mutate(years_active_2015_2019 = (2020 - year_calc) - (2015 - year_calc)) %>% 
+#   mutate(total_N_toenv2015_2019 = years_active_2015_2019 * 365 * Nitrogen_Flux) %>% 
+#   mutate(total_Eff_toenv2015_2019 = years_active_2015_2019 * 365 * Effluent) %>% 
+#   mutate(Nflux_kgpday_5yr_avg = total_N_toenv2015_2019 / (365 *5)) %>%
+#   mutate(Effluent_galpday_5yr_avg = total_Eff_toenv2015_2019 / (365*5)) %>%
+#   st_transform(., crs = crs(ocean_mask))
+
+
+# mean(kauai_2015_2019_IW$Effluent) # 87436
+# max(kauai_2015_2019_IW$Effluent) # 539228 - nothing has changed, no new injection wells
+
+
+```
+
+### Hawaii Dataset
+- Note the Hawaii dataset has a "shut down" column for osds no longer active from Kilauaea eruption removals
+
+```{r}
+
+hawaii_gdb <- file.path(data_dir, "osds/Hawaii_OSDS_Derivative.gdb")
+st_layers(hawaii_gdb)
+hawaii_2023 <- st_read(hawaii_gdb, layer = "Hawaii_OSDS_2023")
+
+#mapview(hawaii_2023)
+
+## run checks
+
+hi_df <- st_drop_geometry(hawaii_2023)
+
+hi_qaqc <- hawaii_2023 %>% 
+  mutate(valid = st_is_valid(.),
+         empty = st_is_empty(.)) # all good on geometries
+
+hi_check <- summary_check(hi_df) # 493 na
+
+hi_zeros <- hawaii_2023 %>% 
+  filter(EFFLUENT == 0) # 399
+
+hi_nas <- hawaii_2023 %>% 
+  filter(is.na(EFFLUENT)) # 493 
+
+# mapview(hi_zeros, col.regions = "blue")+
+#   mapview(hi_nas, col.regions = "green")
+
+# no injection wells
+
+# mess around with eff date a bit - extract year and compare to "Year" columns
+
+class(hawaii_2023$EFF_DATE) # date object
+
+hi_dates_cl <- hawaii_2023 %>%
+  mutate(year_extract = year(EFF_DATE)) %>% 
+  mutate(year_match = ifelse(year_extract == Year,"Yes","No")) %>% 
+  rename(Effluent = EFFLUENT)
+
+
+# summarize
+
+hi_dates_check <- hi_dates_cl %>% 
+  group_by(year_match, Year) %>% 
+  summarize(
+    count_no = length(year_match == "No")
+  )
+  
+# USE THIS ONE replace "pre2009" with year from eff date
+
+hi_2023_cl <- hi_dates_cl %>% 
+  rename(year_char = Year) %>% 
+  rename(Year = year_extract)
+
+
+# also look at shutdown year. should not contain characters
+
+hi_shutdown <- hi_2023_cl %>% 
+  filter(!is.na(Shutdown))
+
+#mapview(hi_shutdown, zcol = "Shutdown")
+
+
+# calculate years active for these separately
+
+
+hi_2023_cl <- hi_2023_cl %>% 
+  mutate(year_shutdown = case_when(
+    Shutdown == "post1992" ~ "2018",
+    Shutdown == "not determined " ~ NA,
+    TRUE ~ Shutdown
+  )) %>% 
+  mutate(year_shutdown = as.numeric(year_shutdown)) %>% 
+  mutate(years_active = year_shutdown - Year) %>% 
+  mutate(years_active = ifelse(years_active < 0, 0, years_active)) # this doesnt matter for first time step
+
+
+
+hi_2010_2014 <- hi_2023_cl %>% 
+  filter(Year < 2015) %>% 
+  filter(is.na(InjectionWell_PermitNo)) %>% # for some reason these were treated differently in this dataset
+  mutate(years_active_2010_2014 = case_when(
+    Year < 2010 ~ (2015 - Year) - (2010 - Year),
+    Year >= 2010 ~ (2015 - Year),
+    TRUE ~ NA)) %>% 
+  mutate(total_N_toenv2010_2014 = years_active_2010_2014 * 365 * Nitrogen_Flux) %>% 
+  mutate(total_Eff_toenv2010_2014 = years_active_2010_2014 * 365 * Effluent) %>% 
+  mutate(Nflux_kgpday_5yr_avg = total_N_toenv2010_2014 / (365 *5)) %>%
+  mutate(Effluent_galpday_5yr_avg = total_Eff_toenv2010_2014 / (365*5)) %>%
+  st_transform(., crs = crs(ocean_mask))
+
+mean(hi_2010_2014$Effluent_galpday_5yr_avg, na.rm = T) #302
+max(hi_2010_2014$Effluent_galpday_5yr_avg, na.rm = T) #36960
+
+hi_2015_2019 <- hi_2023_cl %>% 
+  filter(Year < 2020) %>% 
+  filter(is.na(InjectionWell_PermitNo)) %>% 
+  mutate(years_active_2020 = case_when(
+    is.na(Shutdown) ~ (2020 - Year),
+    !is.na(year_shutdown) ~ (2018 - Year), # to  account for IW shutdown
+    TRUE ~ NA),
+    years_active_2015 = (2015 - Year),
+    years_active_2015_2019 = case_when(
+      Year >= 2015 ~ years_active_2020,
+      Year < 2015 ~ years_active_2020 - years_active_2015,
+      TRUE ~ NA
+    )
+  ) %>% 
   mutate(total_N_toenv2015_2019 = years_active_2015_2019 * 365 * Nitrogen_Flux) %>% 
   mutate(total_Eff_toenv2015_2019 = years_active_2015_2019 * 365 * Effluent) %>% 
   mutate(Nflux_kgpday_5yr_avg = total_N_toenv2015_2019 / (365 *5)) %>%
   mutate(Effluent_galpday_5yr_avg = total_Eff_toenv2015_2019 / (365*5)) %>%
   st_transform(., crs = crs(ocean_mask))
 
+mean(hi_2015_2019$Effluent_galpday_5yr_avg, na.rm = T) #306.32
+max(hi_2015_2019$Effluent_galpday_5yr_avg, na.rm = T) #36960
 
-mean(kauai_2015_2019_IW$Effluent) # 87436
-max(kauai_2015_2019_IW$Effluent) # 539228 - nothing has changed, no new injection wells
+# injection wells only until 2011
+
+hi_IW <- hi_2023_cl %>% 
+  filter(!is.na(InjectionWell_PermitNo)) %>%
+  mutate(years_active_2010_2014 = case_when(
+    Year < 2010 ~ (2015 - Year) - (2010 - Year),
+    Year >= 2010 ~ (2015 - Year),
+    TRUE ~ NA)) %>% 
+  mutate(total_N_toenv2010_2014 = years_active_2010_2014 * 365 * Nitrogen_Flux) %>% 
+  mutate(total_Eff_toenv2010_2014 = years_active_2010_2014 * 365 * Effluent) %>% 
+  mutate(Nflux_kgpday_5yr_avg = total_N_toenv2010_2014 / (365 *5)) %>%
+  mutate(Effluent_galpday_5yr_avg = total_Eff_toenv2010_2014 / (365*5)) %>%
+  st_transform(., crs = crs(ocean_mask))
+  
+mapview(hi_IW)
 
 ```
 
@@ -537,6 +703,8 @@ osds_2015_2019_nad83 <- st_transform(osds_2015_2019, crs = crs(ocean_mask))
 maui_osds_nad83 <- st_transform(mauinui_2023, crs = crs(ocean_mask))
 
 kauai_osds_nad83 <- st_transform(kauai_2023, crs = crs(ocean_mask))
+
+hi_osds_nad83 <- st_transform(hawaii_2023, crs = crs(ocean_mask))
 
 # create oahu specific ocean mask and expand extent to fit entire ocean mask
 extent <- ext(osds_2015_2019_nad83)
@@ -572,12 +740,21 @@ kauai_expanded <- ext(new_kauai_ext)
 ocean_mask_kauai <- terra::crop(ocean_mask, kauai_expanded, mask = T)
 plot(ocean_mask_kauai)
 
+# repeat for Hawaii
 
+hi_ext <- ext(hi_osds_nad83)
+hi_vect <- as.vector(hi_ext)
+add_vec <- c(-15000, 15000, -20000, 15000)
+new_hi_ext <- hi_vect + add_vec
+hi_expanded <- ext(new_hi_ext)
 
+ocean_mask_hi <- terra::crop(ocean_mask,new_hi_ext, mask = T)
+plot(ocean_mask_hi)
 # rasterize function, to apply to multiple point subsets
 
 rasterizePoints <- function(points,mask){
   
+
   # create raster template and rasterize points with terra
   r_om <- rast(mask)
   #rasterize points, using sum to aggregate effluent 
@@ -626,6 +803,18 @@ kauai_2015_2019_eff <- rasterizePoints(kauai_2015_2019, ocean_mask_kauai)
 plot(kauai_IWeff)
 plot(kauai_2010_2014_eff)
 plot(kauai_2015_2019_eff)
+
+
+# hi
+
+hi_2015_2019_eff <- rasterizePoints(hi_2015_2019, ocean_mask_hi)
+hi_2010_2014_eff <- rasterizePoints(hi_2010_2014, ocean_mask_hi)
+hi_IW_eff <- rasterizePoints(hi_IW, ocean_mask_hi)
+
+par(mfrow = c(1,3))
+plot(hi_2015_2019_eff)
+plot(hi_2010_2014_eff)
+plot(hi_IW_eff)
 ```
 
 ## Step 2: Apply focal statistics to estimate "sphere of impact" into nearshore
@@ -646,6 +835,8 @@ plot(kauai_2015_2019_eff)
 
 ocean_mask_oahu[ocean_mask_oahu != 10] <- NA  
 ocean_mask_maui[ocean_mask_maui != 10] <- NA
+ocean_mask_kauai[ocean_mask_kauai != 10] <- NA
+ocean_mask_hi[ocean_mask_hi != 10] <- NA
 
 #plot(ocean_mask_oahu)
 
@@ -710,16 +901,61 @@ kauai_focStat_2010_2014 <- applyFocalStats_extractByMask(kauai_2010_2014_eff, oc
 kauai_focStat_2015_2019 <- applyFocalStats_extractByMask(kauai_2015_2019_eff, ocean_mask_kauai)
 kauai_focStat_IW <- applyFocalStats_extractByMask(kauai_IWeff, ocean_mask_kauai)
 
+
+# hi scenarios
+hi_focStat_2010_2014 <- applyFocalStats_extractByMask(hi_2010_2014_eff, ocean_mask_hi)
+hi_focStat_2015_2019 <- applyFocalStats_extractByMask(hi_2015_2019_eff,ocean_mask_hi)
+hi_focStat_IW <- applyFocalStats_extractByMask(hi_IW_eff, ocean_mask_hi)
+
 ```
 
-## Step 3: Use ocean mask to limit area of impact to marine space & add decay function
+## Step 3: Merge all rasters for statewide dataset
+
+```{r}
+
+# create a collection of rasters for each time step version
+
+all_focStat_2010_2014 <- merge(sprc(
+  focStat_2010_2014,
+  maui_focStat_2010_2014,
+  kauai_focStat_2010_2014,
+  hi_focStat_2010_2014
+  ))
+
+
+plot(all_focStat_2010_2014)
+
+
+all_focStat_2015_2019 <- merge(sprc(
+  focStat_2015_2019,
+  maui_focStat_2015_2019,
+  kauai_focStat_2015_2019,
+  hi_focStat_2015_2019
+  ))
+
+plot(all_focStat_2015_2019) # where is lanai?
+
+all_focStat_IW <- merge(sprc(
+  focStat_IW,
+  maui_focStat_IW,
+  kauai_focStat_IW,
+  hi_focStat_IW
+  ))
+
+
+plot(all_focStat_IW)
+
+```
+
+
+## Step 4: Use ocean mask to limit area of impact to marine space & add decay function
 
 **Assumptions:**
 
 -   Intensity of impact lessens with distance from shore, due to
     chemical decay of N or P and / or wave or currents
 
--   Decay occurs as a linear function of distance from shore
+-   Decay occurs as an exponential function of distance from shore (Gaussian Decay)
 
 ```{r}
 
@@ -731,75 +967,40 @@ source(here("workflow/offshoreDecay.R")) # identical to all other decay for LBSP
 # read in Euclidean distance, check the crs and crop by the custom extent
 
 euc_distance <- rast(file.path(data_dir,"DistFromShore_Euc_2023.tif"))
-euc_distance_oahu <- terra::crop(euc_distance, ocean_mask_oahu, mask = T)
-euc_distance_maui <- terra::crop(euc_distance, ocean_mask_maui, mask = T)
-euc_distance_kauai <- terra::crop(euc_distance, ocean_mask_kauai, mask = T)
+#euc_distance_oahu <- terra::crop(euc_distance, ocean_mask_oahu, mask = T)
+#euc_distance_maui <- terra::crop(euc_distance, ocean_mask_maui, mask = T)
+#euc_distance_kauai <- terra::crop(euc_distance, ocean_mask_kauai, mask = T)
 
-plot(euc_distance_oahu)
-plot(euc_distance_maui)
-plot(euc_distance_kauai)
+#plot(euc_distance_oahu)
+#plot(euc_distance_maui)
+#plot(euc_distance_kauai)
 
 # apply to nearshore rasters - Oahu
   
-final_osds_2015_2019 <- offshore_decay(focStat_2015_2019,euc_distance_oahu)
+final_osds_2015_2019 <- offshore_decay(all_focStat_2015_2019,euc_distance)
 final_osds_2015_2019[final_osds_2015_2019 == 0] <- NA
 minmax(final_osds_2015_2019)
 
 
-finaloahu_IW <- offshore_decay(focStat_IW,euc_distance_oahu)
-finaloahu_IW[finaloahu_IW == 0] <- NA
+final_IW <- offshore_decay(all_focStat_IW,euc_distance)
+final_IW[final_IW == 0] <- NA
 
 
-final_osds_2010_2014 <- offshore_decay(focStat_2010_2014,euc_distance_oahu)
+final_osds_2010_2014 <- offshore_decay(all_focStat_2010_2014,euc_distance)
 final_osds_2010_2014[final_osds_2010_2014 == 0] <- NA
 minmax(final_osds_2010_2014)
 
-
+#####################
 par(mfrow = c(2,2))
 plot(final_osds_2015_2019)
-plot(finaloahu_IW)
+plot(final_IW)
 plot(final_osds_2010_2014)
 
 
 minmax(final_osds_2010_2014)
 minmax(final_osds_2015_2019)
 
-# apply to nearshore rasters - Maui
 
-maui_final_osds_2010_2014 <- offshore_decay(maui_focStat_2010_2014,euc_distance_maui)
-maui_final_osds_2010_2014[maui_final_osds_2010_2014 == 0] <- NA # not sure this is necessary
-
-maui_final_osds_2015_2019 <- offshore_decay(maui_focStat_2015_2019,euc_distance_maui)
-maui_final_osds_2015_2019[maui_final_osds_2015_2019 == 0] <- NA
-
-maui_final_IW <- offshore_decay(maui_focStat_IW,euc_distance_maui)
-maui_final_IW[maui_final_IW == 0] <- NA
-
-
-par(mfrow = c(2,2))
-plot(maui_final_osds_2010_2014)
-plot(maui_final_IW)
-plot(maui_final_osds_2015_2019)
-
-minmax(maui_final_osds_2010_2014)
-minmax(maui_final_osds_2015_2019)
-
-
-# apply to kauai
-
-kauai_final_osds_2010_2014 <- offshore_decay(kauai_focStat_2010_2014,euc_distance_kauai)
-kauai_final_osds_2010_2014[kauai_final_osds_2010_2014 == 0] <- NA # not sure this is necessary
-
-kauai_final_osds_2015_2019 <- offshore_decay(kauai_focStat_2015_2019,euc_distance_kauai)
-kauai_final_osds_2015_2019[kauai_final_osds_2015_2019 == 0] <- NA
-
-kauai_final_IW <- offshore_decay(kauai_focStat_IW,euc_distance_kauai)
-kauai_final_IW[kauai_final_IW == 0] <- NA
-
-par(mfrow = c(2,2))
-plot(kauai_final_osds_2010_2014)
-plot(kauai_final_IW)
-plot(kauai_final_osds_2015_2019)
 
 ```
 
@@ -809,66 +1010,109 @@ plot(kauai_final_osds_2015_2019)
 
 writeRaster(
   final_osds_2015_2019,
-  filename = here("outputs/Oahu_OSDS_2015_2019_eff.tif"),
+  filename = here("outputs/AllIsl_OSDS_2015_2019_eff.tif"),
   overwrite = T
 )
 
 writeRaster(
   final_osds_2010_2014,
-  filename = here("outputs/Oahu_OSDS_2010_2014_eff.tif"),
+  filename = here("outputs/AllIsl_OSDS_2010_2014_eff.tif"),
   overwrite = T
 )
 
 writeRaster(
   finaloahu_IW,
-  filename = here("outputs/Oahu_IW_eff.tif"),
+  filename = here("outputs/AllIsl_IW_eff.tif"),
   overwrite = T
 )
 
-# maui
-
-
-writeRaster(
-  maui_final_osds_2010_2014,
-  filename = here("outputs/Maui_OSDS_2010_2014_eff.tif"),
-  overwrite = T
-)
-
-writeRaster(
-  maui_final_IW,
-  filename = here("outputs/Maui_IW_eff.tif"),
-  overwrite = T
-)
-
-writeRaster(
-  maui_final_osds_2015_2019,
-  filename = here("outputs/Maui_OSDS_2015_2019_eff.tif"),
-  overwrite = T
-)
-
-# kauai
-
-
-writeRaster(
-  kauai_final_osds_2010_2014,
-  filename = here("outputs/Kauai_OSDS_2010_2014_eff.tif"),
-  overwrite = T
-)
-
-writeRaster(
-  kauai_final_IW,
-  filename = here("outputs/Kauai_IW_eff.tif"),
-  overwrite = T
-)
-
-writeRaster(
-  kauai_final_osds_2015_2019,
-  filename = here("outputs/Kauai_OSDS_2015_2019_eff.tif"),
-  overwrite = T
-)
 
 ```
 
+## Old code
+
+```{r}
+
+
+
+# # apply to nearshore rasters - Maui
+# 
+# maui_final_osds_2010_2014 <- offshore_decay(maui_focStat_2010_2014,euc_distance_maui)
+# maui_final_osds_2010_2014[maui_final_osds_2010_2014 == 0] <- NA # not sure this is necessary
+# 
+# maui_final_osds_2015_2019 <- offshore_decay(maui_focStat_2015_2019,euc_distance_maui)
+# maui_final_osds_2015_2019[maui_final_osds_2015_2019 == 0] <- NA
+# 
+# maui_final_IW <- offshore_decay(maui_focStat_IW,euc_distance_maui)
+# maui_final_IW[maui_final_IW == 0] <- NA
+# 
+# 
+# par(mfrow = c(2,2))
+# plot(maui_final_osds_2010_2014)
+# plot(maui_final_IW)
+# plot(maui_final_osds_2015_2019)
+# 
+# minmax(maui_final_osds_2010_2014)
+# minmax(maui_final_osds_2015_2019)
+# 
+# 
+# # apply to kauai
+# 
+# kauai_final_osds_2010_2014 <- offshore_decay(kauai_focStat_2010_2014,euc_distance_kauai)
+# kauai_final_osds_2010_2014[kauai_final_osds_2010_2014 == 0] <- NA # not sure this is necessary
+# 
+# kauai_final_osds_2015_2019 <- offshore_decay(kauai_focStat_2015_2019,euc_distance_kauai)
+# kauai_final_osds_2015_2019[kauai_final_osds_2015_2019 == 0] <- NA
+# 
+# kauai_final_IW <- offshore_decay(kauai_focStat_IW,euc_distance_kauai)
+# kauai_final_IW[kauai_final_IW == 0] <- NA
+# 
+# par(mfrow = c(2,2))
+# plot(kauai_final_osds_2010_2014)
+# plot(kauai_final_IW)
+# plot(kauai_final_osds_2015_2019)
+# 
+# 
+# writeRaster(
+#   maui_final_osds_2010_2014,
+#   filename = here("outputs/Maui_OSDS_2010_2014_eff.tif"),
+#   overwrite = T
+# )
+# 
+# writeRaster(
+#   maui_final_IW,
+#   filename = here("outputs/Maui_IW_eff.tif"),
+#   overwrite = T
+# )
+# 
+# writeRaster(
+#   maui_final_osds_2015_2019,
+#   filename = here("outputs/Maui_OSDS_2015_2019_eff.tif"),
+#   overwrite = T
+# )
+# 
+# # kauai
+# 
+# 
+# writeRaster(
+#   kauai_final_osds_2010_2014,
+#   filename = here("outputs/Kauai_OSDS_2010_2014_eff.tif"),
+#   overwrite = T
+# )
+# 
+# writeRaster(
+#   kauai_final_IW,
+#   filename = here("outputs/Kauai_IW_eff.tif"),
+#   overwrite = T
+# )
+# 
+# writeRaster(
+#   kauai_final_osds_2015_2019,
+#   filename = here("outputs/Kauai_OSDS_2015_2019_eff.tif"),
+#   overwrite = T
+# )
+
+```
 
 
 
