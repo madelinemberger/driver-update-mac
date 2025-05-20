@@ -351,6 +351,10 @@ mapview(mauinui_iw)
 maui_2023_cl <- mauinui_2023 %>%
   filter(!is.na(Effluent))
 
+# look at lanai points
+
+mapview(maui_2023_cl, zcol = "PermitType")
+
 
 # subset points by injection wells versus no injection wells for each 5 year interval
 
@@ -405,6 +409,7 @@ mauinui_2015_2019 <- maui_2023_cl %>%
 
 mean(mauinui_2015_2019$Effluent) # 607
 max(mauinui_2015_2019$Effluent) #27000
+
 
 
 # mauinui_2015_2019_IW <- maui_2023_cl %>% 
