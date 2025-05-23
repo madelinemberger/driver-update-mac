@@ -18,8 +18,6 @@ knitr::opts_chunk$set(echo = TRUE,
                       )
 
 library(here)
-
-
 source(here("workflow/setup.R"))
 
 # file path for osds on dropbox 
@@ -53,16 +51,20 @@ ocean_mask <- terra::rast(file.path(data_dir,"OceanMask_LBSP_post2018.tif"))
 
 # Modelling OSDS Impact to Nearshore
 
-This markdown walks through the steps and code for estimating the relative impact
-of OSDS on the nearshore of the Main Hawaiian Islands.
+This markdown walks through the steps and code for estimating the
+relative impact of OSDS on the nearshore of the Main Hawaiian Islands.
 
-Important note: No ability to assess difference any upgrades if original osds points were replaced by upgraded points FOR ALL YEARS they exist. Our only comparison would be to Joey's layer. Would be cool to also make sure any reductions we're seeing might be influenced by upgrades.
+Important note: No ability to assess difference any upgrades if original
+osds points were replaced by upgraded points FOR ALL YEARS they exist.
+Our only comparison would be to Joey's layer. Would be cool to also make
+sure any reductions we're seeing might be influenced by upgrades.
 
 Input data needed:
 
 -   Point locations of all functional OSDS and the year they were
     permitted. We are using year permitted as a proxy for year built
-    although it may be that some are not built or become functional right away
+    although it may be that some are not built or become functional
+    right away
 
 -   Ocean mask
 
@@ -71,6 +73,7 @@ Input data needed:
 ## Step 0: Clean and explore OSDS Data
 
 ### Oahu Dataset
+
 ```{r}
 
 
@@ -269,7 +272,7 @@ median(oahu_2010_2014$Effluent_galpday_5yr_avg, na.rm = T) #420
 
 ```
 
-### Maui Nui Dataset 
+### Maui Nui Dataset
 
 ```{r}
 
@@ -553,13 +556,23 @@ kauai_IW <- kauai_cl %>%
 ```
 
 ### Hawaii Dataset
-- Note the Hawaii dataset has a "shut down" column for osds no longer active from Kilauaea eruption removals
+
+-   Note the Hawaii dataset has a "shut down" column for osds no longer
+    active from Kilauaea eruption removals
 
 ```{r}
 
 hawaii_gdb <- file.path(data_dir, "osds/Hawaii_OSDS_Derivative.gdb")
 st_layers(hawaii_gdb)
 hawaii_2023 <- st_read(hawaii_gdb, layer = "Hawaii_OSDS_2023")
+
+# save raw version
+
+# st_write(
+#   hawaii_2023,
+#   dsn = here("data/osds/hawaii_2023_raw.shp"),
+#   delete_dsn = T
+# )
 
 #mapview(hawaii_2023)
 
@@ -689,14 +702,24 @@ mapview(hi_IW)
 
 ```
 
-
 ## Step 1: Aggregate effluent and convert to 100 x 100 m raster
 
 **Goal:**
-- Sum up effluent from points within each 100 x 100 grid cell to get total osds effluent for that pixel
-- Separate OSDS from Injection wells
+
+\- Sum up effluent from points within each 100 x 100 grid cell to get
+total osds effluent for that pixel
+
+\- Separate OSDS from Injection wells
 
 **Assumptions:**
+
+\- The impact of OSDS is cummulative
+
+**Notes**
+
+I first create custom extents for each island. I'm keeping the code here
+in case they need to be adjusted, but I also saved shapefile versions of
+each in the `workflow/extents` folder for use in other scripts.
 
 ```{r}
 
@@ -711,15 +734,20 @@ kauai_osds_nad83 <- st_transform(kauai_2023, crs = crs(ocean_mask))
 
 hi_osds_nad83 <- st_transform(hawaii_2023, crs = crs(ocean_mask))
 
-# create oahu specific ocean mask and expand extent to fit entire ocean mask
-extent <- ext(osds_2015_2019_nad83)
+# create oahu specific ocean mask and expand extent to fit entire ocean mask. covert to polygon for saving. 
+extent <- ext(oahu_2015_2019_nad83)
 extent_vec <- as.vector(extent)
 
 add_vec <- c(-14283,14300,-20892,20000)
 new_extent <- extent_vec + add_vec
-expanded <- ext(new_extent)
+oahu_expanded <- ext(new_extent)
 
-ocean_mask_oahu <- terra::crop(ocean_mask, expanded, mask = T)
+oahu_poly <- as.polygons(oahu_expanded)
+crs(oahu_poly) <- crs(oahu_2015_2019_nad83)
+oahu_poly <- st_as_sf(oahu_poly)
+
+# here you you can use the SpatExtent since crop is a terra function. 
+ocean_mask_oahu <- terra::crop(ocean_mask, oahu_expanded, mask = T)
   plot(ocean_mask_oahu)
   
 # repeat for maui
@@ -730,6 +758,10 @@ extent_vec <- as.vector(mauinui_ext)
 add_vec <- c(-20000,20000,-30000,20000)
 new_maui_ext <- extent_vec + add_vec
 maui_expanded <- ext(new_maui_ext)
+
+maui_poly <- as.polygons(maui_expanded)
+crs(maui_poly) <- crs(oahu_2015_2019_nad83)
+maui_poly <- st_as_sf(maui_poly)
 
 ocean_mask_maui <- terra::crop(ocean_mask, maui_expanded, mask = T)
 plot(ocean_mask_maui)
@@ -742,6 +774,10 @@ add_vec <- c(-15000,15000,-10892,10000)
 new_kauai_ext <- kauai_vec + add_vec
 kauai_expanded <- ext(new_kauai_ext)
 
+kauai_poly <- as.polygons(kauai_expanded)
+crs(kauai_poly) <- crs(oahu_2015_2019_nad83)
+kauai_poly <- st_as_sf(kauai_poly)
+
 ocean_mask_kauai <- terra::crop(ocean_mask, kauai_expanded, mask = T)
 plot(ocean_mask_kauai)
 
@@ -753,9 +789,26 @@ add_vec <- c(-15000, 15000, -20000, 15000)
 new_hi_ext <- hi_vect + add_vec
 hi_expanded <- ext(new_hi_ext)
 
+hi_poly <- as.polygons(hi_expanded)
+crs(hi_poly) <- crs(oahu_2015_2019_nad83)
+hi_poly <- st_as_sf(hi_poly)
+
 ocean_mask_hi <- terra::crop(ocean_mask,new_hi_ext, mask = T)
 plot(ocean_mask_hi)
-# rasterize function, to apply to multiple point subsets
+
+
+# Save extents
+
+
+# st_write(oahu_poly, dsn = here("workflow/extents_rds/oahu_extent.shp"))
+# st_write(maui_poly, dsn = here("workflow/extents_rds/maui_extent.shp"))
+#st_write(kauai_poly, dsn = here("workflow/extents_rds/kauai_extent.shp"))
+# st_write(hi_poly, dsn = here("workflow/extents_rds/hi_extent.shp"))
+
+
+# to read these back in use v <- vect(readRDS("test.rds"))
+
+#################### rasterize function #######################################
 
 rasterizePoints <- function(points,mask){
   
@@ -957,7 +1010,6 @@ plot(all_focStat_IW)
 
 ```
 
-
 ## Step 4: Use ocean mask to limit area of impact to marine space & add decay function
 
 **Assumptions:**
@@ -965,7 +1017,8 @@ plot(all_focStat_IW)
 -   Intensity of impact lessens with distance from shore, due to
     chemical decay of N or P and / or wave or currents
 
--   Decay occurs as an exponential function of distance from shore (Gaussian Decay)
+-   Decay occurs as an exponential function of distance from shore
+    (Gaussian Decay)
 
 ```{r}
 
@@ -1014,8 +1067,8 @@ minmax(final_osds_2015_2019)
 
 ```
 
-
 ## Final Step: Save Rasters
+
 ```{r}
 
 writeRaster(
@@ -1035,6 +1088,8 @@ writeRaster(
   filename = here("outputs/AllIsl_IW_eff.tif"),
   overwrite = T
 )
+
+
 
 
 ```
@@ -1123,7 +1178,3 @@ writeRaster(
 # )
 
 ```
-
-
-
-

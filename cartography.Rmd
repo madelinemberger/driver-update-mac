@@ -15,12 +15,155 @@ library(tmap)
 library(mapview)
 
 library(here)
+
+source(here("workflow/setup.R"))
 ```
 
 ## Misc Cartography
 
 This markdown is a place to make maps while I figure out a better long term solution on my mac
 
+## Grey 3D basemap 
+
+This code wrangles the DEM we have from Joey into small, island-size pieces that are more easily used for cartographic purposes. I've saved each so we don't have to keep reading in the large file. this code does not need to be run again, unless we want to adjust how the og DEM is aggregated at some point (ie if in large figs it looks blurry, etc).
+
+Inputs: 
+- MHI coastline / land mass shapefile
+- DEM?
+- TIGER roads
+
+```{r}
+
+# can we get if from drop box?
+
+
+coastlines <- read_sf(here("data/Coastlines_Watersheds/shoreline_CorrectedInlets_2022-23.shp")) #nad83utm4
+
+# gdb
+
+basemap_gdb <- file.path(data_dir,"base-map-layers.gdb")
+st_layers(basemap_gdb)
+
+ ##################################### Roads #################################
+roads <- st_read(basemap_gdb, layer = "Roads_layer")
+
+roads_01 <- roads %>% 
+  filter(COUNTYFP == "001") %>% 
+  filter(Access_Cat == "Normal Roads") %>% 
+  st_transform(crs(dem))
+
+roads_kauai <- roads %>%
+  filter(COUNTYFP == "007") # just molokai
+
+roads_maui <- roads %>% 
+  filter(COUNTYFP == "009")
+
+roads_oahu <- roads %>% 
+  filter(COUNTYFP == "003")
+
+#mapview(roads_01)
+
+############################### Prep DEM ############################################
+
+# read in island extents for cropping the DEM
+
+oahu_ext <- st_read(here("workflow/extents/oahu_extent.shp"))
+maui_ext <- st_read(here("workflow/extents/maui_extent.shp"))
+kauai_ext <- st_read(here("workflow/extents/kaui_extent.shp"))
+hi_ext <- st_read(here("workflow/extents/hi_extent.shp"))
+
+# read in DEM 
+
+dem <- terra::rast(file.path(data_dir,"MHI_DEM_Corrected_hill.tif"))
+
+#rm(list = setdiff(ls(), "dem")) <- code for cleaning environment 
+# crop and aggregate for hi island only
+
+dem_hi <- crop(dem,hi_ext)
+
+dem_smaller <- aggregate(dem_hi, fact = 8, fun = mean)
+
+dem_smaller[dem_smaller == 0] <- NA
+
+plot(dem_smaller)
+
+# repeat for other islands
+
+dem_oahu <- crop(dem, oahu_ext)
+dem_oahu[dem_oahu < 0] <- NA # this doesnt work for oahu for some reason
+dem_oahu_sm <- aggregate(dem_oahu, fact = 8, fun = mean)
+dem_oahu_sm[dem_oahu_sm == 0] <- NA
+dem_oahu_sm[dem_oahu_sm > 250] <- NA
+
+plot(dem_oahu_sm)# some weird artifacts?
+
+# try cropping to coastline
+oahu_coast <- coastlines %>%  filter(Island == "Oahu") %>% st_transform(crs = crs(dem_oahu_sm))
+
+dem_oahu_sm_cl <- crop(dem_oahu_sm, oahu_coast)
+dem_oahu_sm_msk <- mask(dem_oahu_sm_cl, oahu_coast)
+plot(dem_oahu_sm_msk)
+
+dem_mauinui <- crop(dem, maui_ext)
+dem_mauinui_sm <- aggregate(dem_mauinui, fact = 8, fun = mean)
+dem_mauinui_sm[dem_mauinui_sm == 0] <- NA
+
+plot(dem_mauinui_sm)
+
+dem_kauai <- crop(dem, kauai_ext)
+dem_kauai[dem_kauai < 1] <- NA # this gets rid of ocean cells before aggregating
+dem_kauai_sm <- aggregate(dem_kauai, fact = 10, fun = mean, na.rm = TRUE)
+dem_kauai_sm[dem_kauai_sm == 0] <- NA
+dem_kauai_sm[dem_kauai_sm > 250] <- NA
+
+plot(dem_kauai_sm)
+
+# save
+writeRaster(dem_oahu_sm_msk, file.path(data_dir,"dem_oahu_smaller.tif"), overwrite = TRUE)
+writeRaster(dem_mauinui_sm, file.path(data_dir,"dem_mauinui_smaller.tif"), overwrite = TRUE)
+writeRaster(dem_kauai_sm, file.path(data_dir,"dem_kauai_smaller.tif"), overwrite = TRUE)
+
+
+################# Basemaps for HI island ##########################################
+
+hi_coast <- coastlines %>%
+  filter(Island == "Hawaii") %>% 
+  st_transform(crs = crs(dem))
+
+coastlines_only <- coastlines %>% 
+  filter(Island == "Hawaii") %>% 
+  ggplot()+
+  geom_sf(color = "grey")+
+  theme_minimal()
+
+coastlines_only
+
+
+
+
+
+# convert to data frame for ggplot
+
+dem_df <- terra::as.data.frame(dem_smaller, xy = TRUE,na.rm = TRUE)
+
+# 
+ colnames(dem_df)[3] <- "elevation"
+
+with_dem <- ggplot()+
+  geom_sf(data = hi_coast, fill = "white", color = "#696969", size = 0.3)+
+  geom_raster(data = dem_df, aes(x = x, y = y, fill = elevation), alpha = 0.7)+
+  scale_fill_gradientn(colours=c("#454545", "#e9e9e9"))+
+  guides(fill = "none")+
+  coord_sf()+
+  theme_bw()
+
+with_dem
+
+#library(elevatr)
+
+#elevation <- get_elev_raster(hi_coast, z = 14, clip = "bbox") # still too huge
+
+```
 
 ## Maui case study maps 
 
