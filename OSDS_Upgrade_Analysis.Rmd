@@ -64,7 +64,7 @@ Which data rows are completely distinct?
 
 - All rows contain unique combinations of data in both datasets
 
-Which geometries are distinct?
+#### Which geometries are distinct?
 
 ```{r}
 
@@ -94,65 +94,115 @@ hi_2023_doubles <- hi_2023_raw %>%  filter(geometry %in% hi_2023_dup_geoms$geome
 
 ```
 
-From this investigation, it seems like many of the duplicate geometries are also duplicate TMKS that are likely 
+From this investigation, it seems like many of the duplicate geometries are also duplicate TMKS that are labeled as cesspool upgrades.
 
-Which TMKs are distinct?
+#### Which TMKs are distinct?
+
+Thourough QA QC of all the duplicate TMKs.
 
 ```{r}
 
 # are the non-distinct TMKS upgrades, multiple properties on the same TMK, or duplicates
 
-hi_2017_dist_tmks <- hi_2017_raw %>% distinct(TMK, .keep_all = T)
+#hi_2017_dist_tmks <- hi_2017_raw %>% distinct(TMK, .keep_all = T)
+library(data.table)
+dt <- as.data.table(hi_2017_raw)
 
-hi_2017_dup_tmks <- setdiff(hi_2017_raw, hi_2017_dist_tmks) #2089
+tmk_counts <- dt %>%
+  group_by(TMK) %>%
+  tally() %>%
+  filter(n > 1) #2089
 
 # exemine duplicates togther more closely
 
-hi_2017_dup_tmks <- hi_2017_raw %>% filter(TMK %in% hi_2017_dup_tmks$TMK) #4178
+hi_2017_dup_tmks <- hi_2017_raw %>% filter(TMK %in% tmk_counts$TMK) #4178
 
 mapview(hi_2017_dup_tmks)
 
 # isolate possible cesspool replacements
 
 hi_2017_replacements <- hi_2017_dup_tmks %>% 
-  filter(COMMENTS == "Possible Cesspool Replacement") %>% 
-  filter(TYPE == "Septic")
+  filter(COMMENTS == "Possible Cesspool Replacement") #3143
+  #filter(TYPE == "Septic")
+  
 
-# now, look at all of these with their duplicates. do each of these have a prior cesspool?
+hi_replacement_tmk <-  hi_2017_replacements %>%  pull(TMK) %>%
+  unique()
 
-hi_2017_cess2sep <- hi_2017_raw %>% filter(TMK %in% hi_2017_replacements$TMK) # no, 600 additional
+hi_2017_non_upgrade_dups <- hi_2017_dup_tmks %>%
+  filter(!(TMK %in% hi_replacement_tmk)) # this is zero
 
-# group
+# a few others checks: 
 
+## Which TMKS are exactly the same
+
+exact_copes <- hi_2017_dup_tmks %>%
+  group_by(across(everything())) %>%
+  tally() %>%
+  filter(n > 1) # none
+
+## Are the comments on all the duplicate tmks the same?
+comments <- hi_2017_dup_tmks %>%
+  group_by(TMK) %>%
+  summarize(all_comments = paste(unique(COMMENTS), collapse = ", ")) %>%
+  filter(grepl(",", all_comments))
+
+# are there any with more than 2 entries?
+
+tmk_counts %>% filter(n > 2) # no
+
+```
+
+Wrangle confirmed cesspool upgrades (as determined by notes)
+
+```{r}
+
+
+hi_2017_cess2sep <- hi_2017_raw %>% filter(TMK %in% hi_2017_replacements$TMK) 
+
+# hi_2017_cess2sep2 <- hi_2017_raw %>% filter(TMK %in% hi_2017_dup_tmks$TMK) # identical to above so we are good
+
+# group and pivot to examine differences
 
 hi_2017_summary <- hi_2017_cess2sep %>% 
   as.data.frame() %>% 
   st_drop_geometry() %>% 
-  select(TMK, OSDS_TYPE,starts_with("CLASS"),EFF_DATE, DATE_BASIS,EFFLUENT) %>% 
+  select(TMK, OSDS_TYPE,starts_with("CLASS"),EFF_DATE, DATE_BASIS,EFFLUENT, N_FLUX) %>% 
   pivot_longer(cols = starts_with("CLASS"), names_to = "class", values_to = "quantity") %>% 
   filter(quantity > 0)
 
-length(unique(hi_2017_summary$TMK)) #871
+length(unique(hi_2017_summary$TMK)) #2029 if not
 
 mapview(hi_2017_cess2sep, zcol = "OSDS_TYPE")
 
+
 ```
 
-From this, we can see that many of the TMKS in the `hi_2017_summary` dataset are likely upgrades. It is important that we use the "cesspool" version prior to the upgrade.
+
+From this, we can see that many of the TMKS in the `hi_2017_summary` dataset are likely upgrades. It is important that we use the "cesspool" version prior to the upgrade. Weirdly, some are also still cesspools even after upgrade. 
 
 Are these possible upgrades in the 2023 dataset? Filter 2023 by TMKs in `hi_2017_summary` to find out.
 
 ```{r}
 
-hi_2023_poss_upgrades <- hi_2023_raw %>% filter(TMK %in% hi_2017_summary$TMK) # 868
+hi_2023_poss_upgrades <- hi_2023_raw %>% filter(TMK %in% hi_2017_summary$TMK) # 2085
 
-# which two are missing?
+# which two are missing? map it
 missing_from_2023 <- setdiff(hi_2017_summary$TMK,hi_2023_poss_upgrades$TMK)
 
+missing_from_2023geom <- hi_2017_raw %>% filter(TMK %in% missing_from_2023)
+mapview(missing_from_2023geom, label = "EFF_DATE")
 
-# none of these are duplicated?
+# are any duplicates in the 2023 dataset?
 
-distinct(hi_2023_poss_upgrades, TMK) # no duplicates
+dt_2023 <- as.data.table(hi_2023_raw)
+
+
+tmk_counts_2023 <-dt_2023 %>% 
+  group_by(TMK) %>%
+  tally() # no repeat tmks
+
+# now, lets look at the tmks that are marked as duplicates in 2017 in 2023 - are they all "upgraded"?
 
 hi_2023_poss_upgr_types <- hi_2023_poss_upgrades %>% 
   group_by(PrmtTyp,DspslTy,osds_cl) %>% 
@@ -160,12 +210,16 @@ hi_2023_poss_upgr_types <- hi_2023_poss_upgrades %>%
     total_count = sum(OSDS_QT)
   )
 
+# from this table we can see most of them are still cesspools. 
+
+hi_2023_still_cesspools <- hi_2023_poss_upgrades
 
 
 ```
 
-These TMK are not in 2023:
+These TMK are in 2017 but not in 2023:
 - 375032019
+- 383007015
 - 384005033
 - 392011037
 
@@ -174,12 +228,16 @@ Findings from this we see that all but 3 of TMKS with possible cesspool upgrades
 However, some still are "class 5", which is the same treatment level as cesspools. This appears to be due to the fact that they TMK has multiple and in that instance per Julia's methods, are assumed to be Class V. 
 
 
+#### New Septic: What are the differences between old and new TMKs with possible upgrades, just using 2017 data?
+
 Separate out newer versions to compare with 2023. Do they match?
 Also, calculate the effluent difference if we were to use the older version.
 
 ```{r}
 
 # assess changes from the 2017 data
+
+#hi_2017_summary <- filter(hi_2017_summary, str_detect(OSDS_TYPE,"Septic"))
 
 class(hi_2017_summary$EFF_DATE)
 
@@ -201,15 +259,16 @@ newer_2017 <- hi_2017_summary %>%
 hi_2017_upgrade_summ <- bind_rows(newer_2017,older_2017)
 
 hi_2017_upgrade_wide <- hi_2017_upgrade_summ %>% 
-  select(TMK,EFF_DATE,instance,class,quantity,EFFLUENT) %>% 
+  select(TMK,EFF_DATE,instance,class,quantity,EFFLUENT,N_FLUX) %>% 
   pivot_wider(id_cols = TMK,
               names_from = instance,
-              values_from = c(EFF_DATE,class,quantity,EFFLUENT),
+              values_from = c(EFF_DATE,class,quantity,EFFLUENT,N_FLUX),
               names_sep = "_") %>% 
   mutate(
     class_changed = class_older != class_newer,
     effluent_diff = EFFLUENT_older - EFFLUENT_newer, # if this is NEGATIVE than the new effluent is more??
-    qty_diff = quantity_older - quantity_newer 
+    qty_diff = quantity_older - quantity_newer,
+    nflux_diff = N_FLUX_older - N_FLUX_newer
   )
 
 
@@ -223,7 +282,7 @@ instance_join <- hi_2017_upgrade_summ %>%
 
 Note - these may have additional changed geometry. But right now we are just focused on the TMKS
 
-### Visualize Findings
+##### Visualize Findings
 
 First we need to re-join the data to geometries.
 
@@ -291,10 +350,12 @@ source(here("workflow/3D_basemaps.R"))
 
 hi_2017_upchange_plot <- hi_2017_upgrade_changes %>% 
   mutate(
-    color_eff = ifelse(effluent_diff >= 0,"dodgerblue","red"),# red meaning effluent has increased over time
+    color_eff = ifelse(effluent_diff >= 0,"dodgerblue","red"), #red meaning effluent has increased over time
     magnitude_eff = abs(effluent_diff),
     direction_qty = ifelse(effluent_diff > 0,"Decreased or No Change","Increased"),
-    magnitude_qty = abs(qty_diff)
+    magnitude_qty = abs(qty_diff),
+    direction_n = ifelse(nflux_diff > 0, "Decreased or No Change","Increased"),
+    magnitude_n = abs(nflux_diff)
   )
 
 
@@ -305,25 +366,25 @@ hist(hi_2017_upchange_plot$effluent_diff)
 hist(hi_2017_upchange_plot$qty_diff)
 
 
-ggplot(data = hi_2017_upchange_plot)+
-  #geom_sf(data = land, fill = "grey95", color = "grey80")+
-  geom_sf(aes(size = magnitude, color = color), alpha = 0.6) + 
-  scale_color_identity()+
-  theme_minimal()+
-  labs(title = "Possible Cesspool Upgrades",
-       size = "Magnitude of Effluent Change")
-
-
-
-
-ggplot(data = hi_2017_upchange_plot)+
-  #geom_sf(data = land, fill = "grey95", color = "grey80")+
-  geom_sf(aes(size = abs(effluent_diff), color = effluent_diff), alpha = 0.6) + 
-  scale_color_gradient2(low = "dodgerblue", high = "red", midpoint = 0)+
-  scale_size_continuous(range = c(2,10))+
-  theme_minimal()+
-  labs(title = "Possible Cesspool Upgrades",
-       size = "Magnitude of Effluent Change")
+# ggplot(data = hi_2017_upchange_plot)+
+#   #geom_sf(data = land, fill = "grey95", color = "grey80")+
+#   geom_sf(aes(size = magnitude, color = color), alpha = 0.6) + 
+#   scale_color_identity()+
+#   theme_minimal()+
+#   labs(title = "Possible Cesspool Upgrades",
+#        size = "Magnitude of Effluent Change")
+# 
+# 
+# 
+# 
+# ggplot(data = hi_2017_upchange_plot)+
+#   #geom_sf(data = land, fill = "grey95", color = "grey80")+
+#   geom_sf(aes(size = abs(effluent_diff), color = effluent_diff), alpha = 0.6) + 
+#   scale_color_gradient2(low = "dodgerblue", high = "red", midpoint = 0)+
+#   scale_size_continuous(range = c(2,10))+
+#   theme_minimal()+
+#   labs(title = "Possible Cesspool Upgrades",
+#        size = "Magnitude of Effluent Change")
 
 
 
@@ -332,7 +393,7 @@ ggplot(data = hi_2017_upchange_plot)+
 effluent_change_final <- hi_with_dem +
   geom_sf(data = hi_2017_upchange_plot,aes(size = magnitude_eff, color = color_eff), alpha = 0.6) + 
   scale_color_identity()+
-  theme_minimal()+
+  #theme_minimal()+
   labs(title = "Possible Cesspool Upgrades on Hawaii",
        size = "Magnitude of Effluent Change",
        #color = "Direction of Magnitude Change"
@@ -341,6 +402,12 @@ effluent_change_final <- hi_with_dem +
 
 effluent_change_final
 
+ggsave(plot = last_plot(),
+       filename = here("figs/osds_2017_upgradesEffChange.png"),
+       width = 5.5,
+       height = 5, 
+       units = "in",
+       dpi = 300)
 
 # quantity change
 
@@ -352,8 +419,8 @@ quantity_change <- hi_with_dem +
       "Decreased or No Change" = "cadetblue"
     )
   )+
-  scale_size_continuous(range = c(1, 5), name = "Magnitude of change")+
-  theme_minimal()+
+  scale_size_continuous(range = c(1, 5), name = "Magnitude of change in Qty")+
+  #theme_minimal()+
   labs(title = "Possible Cesspool Upgrades on Hawaii",
        size = "Change in OSDS Number",
        #color = "Direction of Magnitude Change"
@@ -362,11 +429,57 @@ quantity_change <- hi_with_dem +
 
 quantity_change
 
+ggsave(plot = last_plot(),
+       filename = here("figs/osds_2017_upgradesQtyChange.png"),
+       width = 5.5,
+       height = 5, 
+       units = "in",
+       dpi = 300)
+
+
+# nflux change
+
+nflux_change <- hi_with_dem + 
+  geom_sf(data = hi_2017_upchange_plot,aes(size = magnitude_n, color = direction_n), alpha = 0.6)+
+  scale_color_manual(
+    values = c(
+      "Increased" = "brown",
+      "Decreased or No Change" = "aquamarine"
+    )
+  )+
+  scale_size_continuous(range = c(1, 5), name = "Magnitude of change in N Flux")+
+  labs(title = "Possible Cesspool Upgrades on Hawaii",
+       size = "Change in N Flux",
+       color = "Direction of Change"
+       )
+  
+
+nflux_change
+
+ggsave(plot = last_plot(),
+       filename = here("figs/osds_2017_upgradesNChange.png"),
+       width = 5.5,
+       height = 5, 
+       units = "in",
+       dpi = 300)
+
+
 ```
 
-The mystery here to me is why are we seeing an increase in effluent following a decrease in class assignment? Is it because we changed the calculation?
+The mystery here to me is why are we seeing an increase in effluent following a decrease in class assignment? Is it because we changed the calculation? But, I didn't do that here.
 
-Second question to explore: Does N scale directly with effluent? Probably not but double check metatdata. Then map N as well. 
+Second question to explore: Does N scale directly with effluent? Probably not but double check metadata. Then map N as well. 
+
+#### Are the newer versions of the upgraded cesspools in 2017 showing the same data for 2023?
+Ie, is the effluent, N, and qty the same? Hypothesis: no because calcualtion might be different.
+
+```{r}
+
+
+
+
+
+```
 
 
 

@@ -1,0 +1,140 @@
+---
+title: "Dplyr to Data.Table"
+author: "Madeline Berger"
+date: "2025-05-28"
+output: html_document
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+Set up 
+
+```{r}
+
+library(data.table)
+dt <- as.data.table(df)  # Convert from data.frame or tibble
+
+
+```
+
+
+Filter Rows
+
+```{r}
+
+# dplyr
+df %>% filter(x > 5)
+
+# data.table
+dt[x > 5]
+
+
+```
+
+Select or Drop Columns
+
+```{r}
+
+# dplyr
+df %>% select(a, b)
+
+# data.table
+dt[, .(a, b)]
+
+# dropping
+
+# dplyr
+df %>% select(-a)
+
+# data.table
+dt[, a := NULL]  # or dt[, !'a', with = FALSE]
+
+
+
+```
+
+Create or modify Columns
+
+```{r}
+
+
+# dplyr
+df %>% mutate(new = a + b)
+
+# data.table
+dt[, new := a + b]
+
+
+```
+
+
+Grouping and summarizing
+
+```{r}
+
+# dplyr
+df %>% group_by(a) %>% count()
+df %>% group_by(a) %>% summarize(m = mean(b))
+
+# data.table
+dt[, .N, by = a]
+dt[, .(m = mean(b)), by = a]
+
+
+
+
+```
+
+Joins
+```{r}
+
+
+# dplyr
+left_join(x, y, by = "id")
+inner_join(x, y, by = "id")
+
+# data.table
+y[x, on = .(id)]
+y[x, on = .(id), nomatch = 0]
+
+
+
+
+```
+
+Remove Duplicates
+
+```{r}
+
+# dplyr
+distinct(df, a, .keep_all = TRUE)
+
+# data.table
+unique(dt, by = "a")
+
+
+
+
+```
+
+Other Handy Data Table Tips
+
+```{r}
+
+
+# Count rows
+dt[, .N]
+
+# Group and apply function to all columns
+dt[, lapply(.SD, mean), by = group_col]
+
+# Subset of data
+dt[, .SD, .SDcols = c("a", "b")]
+
+# Order rows
+dt[order(a, -b)]
+
+
+```
+
