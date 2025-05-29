@@ -202,7 +202,7 @@ tmk_counts_2023 <-dt_2023 %>%
   group_by(TMK) %>%
   tally() # no repeat tmks
 
-# now, lets look at the tmks that are marked as duplicates in 2017 in 2023 - are they all "upgraded"?
+#  lets look at the tmks that are marked as duplicates in 2017 in 2023 - are they all "upgraded"?
 
 hi_2023_poss_upgr_types <- hi_2023_poss_upgrades %>% 
   group_by(PrmtTyp,DspslTy,osds_cl) %>% 
@@ -212,7 +212,10 @@ hi_2023_poss_upgr_types <- hi_2023_poss_upgrades %>%
 
 # from this table we can see most of them are still cesspools. 
 
-hi_2023_still_cesspools <- hi_2023_poss_upgrades
+hi_2023_still_cesspools <- hi_2023_poss_upgrades %>%
+  select(TMK, OSDS_TYPE = PrmtTyp,starts_with("CLASS"),EFF_DAT,EFFLUENT = EFFLUEN, N_FLUX = Ntrgn_F) %>% 
+  pivot_longer(cols = starts_with("CLASS"), names_to = "class", values_to = "quantity") %>% 
+  filter(quantity > 0)
 
 
 ```
@@ -471,20 +474,76 @@ The mystery here to me is why are we seeing an increase in effluent following a 
 Second question to explore: Does N scale directly with effluent? Probably not but double check metadata. Then map N as well. 
 
 #### Are the newer versions of the upgraded cesspools in 2017 showing the same data for 2023?
-Ie, is the effluent, N, and qty the same? Hypothesis: no because calcualtion might be different.
+Ie, is the effluent, N, and qty the same? Hypothesis: no because calculation might be different.
 
 ```{r}
 
+# grab just newer versions of the 2017 cesspool upgrades
+newer_2017 <- hi_2017_upgrade_wide %>% 
+  select(TMK, ends_with("newer")) %>% 
+  rename_with(~str_replace(., "newer","2017"))
 
+# create wide version of 2023
+
+hi_2023_upgrades_wide <- hi_2023_poss_upgrades %>%
+  select(TMK, OSDS_TYPE = PrmtTyp,class = osds_cl,EFF_DATE = EFF_DAT,EFFLUENT = EFFLUEN, N_FLUX = Ntrgn_F, quantity = OSDS_QT) %>% 
+  #pivot_longer(cols = starts_with("CLASS"), names_to = "class", values_to = "quantity") %>% 
+  filter(quantity > 0) %>% 
+  rename_with(~paste0(.x,"_2023"), -TMK,-geometry) #2370 why duplicates? because how we have more than 1 class
+
+
+# join together and re-calculate the impact change metrics
+
+hi_2023_2017_compare <- left_join(hi_2023_upgrades_wide, newer_2017, by = "TMK") %>% 
+  mutate(
+    class_2017 = case_when(
+      class_2017 == "CLASS_I" ~ 1,
+      class_2017 == "CLASS_II" ~ 2,
+      class_2017 == "CLASS_III" ~ 3,
+      class_2017 == "CLASS_IV" ~ 4,
+      class_2017 == "CLASS_V" ~ 5,
+      TRUE ~ NA
+    )
+  ) %>% 
+  mutate(
+    date_changed = EFF_DATE_2017 != EFF_DATE_2023,
+    class_changed = class_2017 != class_2023,
+    effluent_diff = EFFLUENT_2017 - EFFLUENT_2023, # if this is NEGATIVE than the new effluent is more??
+    qty_diff = quantity_2017 - quantity_2023,
+    nflux_diff = N_FLUX_2017 - N_FLUX_2023,
+    all_match = !date_changed & !class_changed & effluent_diff == 0 & qty_diff == 0 & nflux_diff == 0
+  )
+
+
+
+# which have changed class
+hi_2017_class_diff <- hi_2023_2017_compare %>% 
+  filter(class_changed == TRUE) # so some of these have different classes, same date but the same N flux? # n = 214
+
+# which have changed DATE
+hi_2017_date_diff <- hi_2023_2017_compare %>%
+  filter(date_changed == TRUE) # n = 171
+  
+
+summary_counts <- hi_2023_2017_compare %>%
+  distinct(TMK, .keep_all = TRUE) %>% 
+  summarize(
+    total = n(),
+    exact_matches = sum(all_match, na.rm = TRUE),
+    differing = total - exact_matches # ok so 582 are different while the rest match what is in our dataset. What is driving these differences? hunch = osds assigned as multiple, maybe
+  )
 
 
 
 ```
 
+Ok SO - we see there are key differences between 2017 and 2023. Does this mean that these have been upgraded again? is the information just different? What is driving these changes. 
+
+I think we can create a strong framework for what to consider changes. For example: if class and date are changing together, is that a new permit and should be considered an upgrade. If tha class changed but the date didnt...what? if date changed but class didnt....what is this.
 
 
 Next steps: 
 
-- Compare to 2010 datasets, and do that for other islands
+- Compare to 2010 datasets? This may not be a good exercise if the calculation is different. Wait until post meeting
 - Possibly create new yearly versions
 
