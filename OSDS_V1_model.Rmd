@@ -1067,7 +1067,7 @@ minmax(final_osds_2015_2019)
 
 ```
 
-## Final Step: Save Rasters
+## Save Rasters
 
 ```{r}
 
@@ -1094,87 +1094,67 @@ writeRaster(
 
 ```
 
-## Old code
+
+## Make some maps
 
 ```{r}
+# read in basemaps
+source(here("workflow/3D_basemaps.R"))
+
+# read in final rasters from output folder
+
+inject_wells <- rast(here("outputs/AllIsl_IW_eff.tif"))
+
+iw_df <- terra::as.data.frame(inject_wells, xy = TRUE, na.rm = TRUE)
+colnames(iw_df)[3] <- "effluent_gal_day"
+
+eff_2015_2019 <- rast(here("outputs/AllIsl_OSDS_2015_2019_eff.tif"))
+
+eff_df <- terra::as.data.frame(eff_2015_2019, xy = TRUE,na.rm = TRUE)
+
+colnames(eff_df)[3] <- "effluent_gal_day"
+
+plot(inject_wells)
+plot(eff_2015_2019)
+
+library(ggnewscale)
+
+x_limits <- range(hi_dem_df$x, na.rm = TRUE)
+y_limits <- range(hi_dem_df$y, na.rm = TRUE)
 
 
+hi_test <- hi_with_dem + 
+  new_scale_fill() + # necessary to maintain basemap
+  geom_raster(data = eff_df, aes(x = x, y = y, fill = effluent_gal_day), alpha = 0.7)+
+  scale_fill_gradientn(colours=c("white", "olivedrab"),
+                       trans = "sqrt")+
+  coord_sf(xlim = x_limits, ylim = y_limits, expand = FALSE)
 
-# # apply to nearshore rasters - Maui
-# 
-# maui_final_osds_2010_2014 <- offshore_decay(maui_focStat_2010_2014,euc_distance_maui)
-# maui_final_osds_2010_2014[maui_final_osds_2010_2014 == 0] <- NA # not sure this is necessary
-# 
-# maui_final_osds_2015_2019 <- offshore_decay(maui_focStat_2015_2019,euc_distance_maui)
-# maui_final_osds_2015_2019[maui_final_osds_2015_2019 == 0] <- NA
-# 
-# maui_final_IW <- offshore_decay(maui_focStat_IW,euc_distance_maui)
-# maui_final_IW[maui_final_IW == 0] <- NA
-# 
-# 
-# par(mfrow = c(2,2))
-# plot(maui_final_osds_2010_2014)
-# plot(maui_final_IW)
-# plot(maui_final_osds_2015_2019)
-# 
-# minmax(maui_final_osds_2010_2014)
-# minmax(maui_final_osds_2015_2019)
-# 
-# 
-# # apply to kauai
-# 
-# kauai_final_osds_2010_2014 <- offshore_decay(kauai_focStat_2010_2014,euc_distance_kauai)
-# kauai_final_osds_2010_2014[kauai_final_osds_2010_2014 == 0] <- NA # not sure this is necessary
-# 
-# kauai_final_osds_2015_2019 <- offshore_decay(kauai_focStat_2015_2019,euc_distance_kauai)
-# kauai_final_osds_2015_2019[kauai_final_osds_2015_2019 == 0] <- NA
-# 
-# kauai_final_IW <- offshore_decay(kauai_focStat_IW,euc_distance_kauai)
-# kauai_final_IW[kauai_final_IW == 0] <- NA
-# 
-# par(mfrow = c(2,2))
-# plot(kauai_final_osds_2010_2014)
-# plot(kauai_final_IW)
-# plot(kauai_final_osds_2015_2019)
-# 
-# 
-# writeRaster(
-#   maui_final_osds_2010_2014,
-#   filename = here("outputs/Maui_OSDS_2010_2014_eff.tif"),
-#   overwrite = T
-# )
-# 
-# writeRaster(
-#   maui_final_IW,
-#   filename = here("outputs/Maui_IW_eff.tif"),
-#   overwrite = T
-# )
-# 
-# writeRaster(
-#   maui_final_osds_2015_2019,
-#   filename = here("outputs/Maui_OSDS_2015_2019_eff.tif"),
-#   overwrite = T
-# )
-# 
-# # kauai
-# 
-# 
-# writeRaster(
-#   kauai_final_osds_2010_2014,
-#   filename = here("outputs/Kauai_OSDS_2010_2014_eff.tif"),
-#   overwrite = T
-# )
-# 
-# writeRaster(
-#   kauai_final_IW,
-#   filename = here("outputs/Kauai_IW_eff.tif"),
-#   overwrite = T
-# )
-# 
-# writeRaster(
-#   kauai_final_osds_2015_2019,
-#   filename = here("outputs/Kauai_OSDS_2015_2019_eff.tif"),
-#   overwrite = T
-# )
+hi_test
+
+# reset limits for oahu
+x_limits <- range(oahu_dem_df$x, na.rm = TRUE)
+y_limits <- range(oahu_dem_df$y, na.rm = TRUE)
+
+oahu_eff <- oahu_with_dem + 
+  new_scale_fill() + # necessary to maintain basemap
+  geom_raster(data = eff_df, aes(x = x, y = y, fill = effluent_gal_day))+
+  scale_fill_gradientn(colours=c("white", "#5C4033"),
+                       trans = "sqrt")+
+  coord_sf(xlim = x_limits, ylim = y_limits, expand = FALSE)
+
+oahu_eff
+
+oahu_IW <- oahu_with_dem + 
+  new_scale_fill() + # necessary to maintain basemap
+  geom_raster(data = iw_df, aes(x = x, y = y, fill = effluent_gal_day))+
+  scale_fill_gradientn(colours=c("white", "#6A6E09"),
+                       trans = "log")+
+  coord_sf(xlim = x_limits, ylim = y_limits, expand = FALSE)
+
+oahu_IW
+
+
 
 ```
+

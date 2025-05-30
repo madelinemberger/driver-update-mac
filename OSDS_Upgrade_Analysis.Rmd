@@ -213,9 +213,9 @@ hi_2023_poss_upgr_types <- hi_2023_poss_upgrades %>%
 # from this table we can see most of them are still cesspools. 
 
 hi_2023_still_cesspools <- hi_2023_poss_upgrades %>%
-  select(TMK, OSDS_TYPE = PrmtTyp,starts_with("CLASS"),EFF_DAT,EFFLUENT = EFFLUEN, N_FLUX = Ntrgn_F) %>% 
-  pivot_longer(cols = starts_with("CLASS"), names_to = "class", values_to = "quantity") %>% 
-  filter(quantity > 0)
+  # select(TMK, OSDS_TYPE = PrmtTyp,starts_with("CLASS"),EFF_DAT,EFFLUENT = EFFLUEN, N_FLUX = Ntrgn_F) %>% 
+  # pivot_longer(cols = starts_with("CLASS"), names_to = "class", values_to = "quantity") %>% 
+  # filter(quantity > 0)
 
 
 ```
