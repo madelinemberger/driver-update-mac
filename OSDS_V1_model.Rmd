@@ -1110,6 +1110,11 @@ colnames(iw_df)[3] <- "effluent_gal_day"
 
 eff_2015_2019 <- rast(here("outputs/AllIsl_OSDS_2015_2019_eff.tif"))
 
+# cool way to add alpha
+iw_df <- iw_df %>%
+  mutate(alpha_val = scales::rescale(effluent_gal_day, from = c(min(effluent_gal_day), max(effluent_gal_day))))
+
+
 eff_df <- terra::as.data.frame(eff_2015_2019, xy = TRUE,na.rm = TRUE)
 
 colnames(eff_df)[3] <- "effluent_gal_day"
@@ -1141,7 +1146,9 @@ oahu_eff <- oahu_with_dem +
   geom_raster(data = eff_df, aes(x = x, y = y, fill = effluent_gal_day))+
   scale_fill_gradientn(colours=c("white", "#5C4033"),
                        trans = "sqrt")+
+  geom_sf(data = oahu_coast, fill = NA, color = "#696969", size = 0.3)+
   coord_sf(xlim = x_limits, ylim = y_limits, expand = FALSE)
+  
 
 oahu_eff
 
