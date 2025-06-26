@@ -539,7 +539,7 @@ summary_counts <- hi_2023_2017_compare %>%
 
 Ok SO - we see there are key differences between 2017 and 2023. Does this mean that these have been upgraded again? is the information just different? What is driving these changes. 
 
-I think we can create a strong framework for what to consider changes. For example: if class and date are changing together, is that a new permit and should be considered an upgrade. If tha class changed but the date didnt...what? if date changed but class didnt....what is this.
+I think we can create a strong framework for what to consider changes. For example: if class and date are changing together, is that a new permit and should be considered an upgrade. If that class changed but the date didn't...what? if date changed but class didn't, ensure that its not an upgrade. 
 
 
 Next steps: 

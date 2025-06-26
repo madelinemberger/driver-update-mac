@@ -1,0 +1,222 @@
+---
+title: "OSDS Points Explore"
+author: "Madeline Berger"
+date: "2025-03-05"
+output: html_document
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+```{r}
+
+
+library(sf)
+library(terra)
+library(here)
+library(janitor)
+library(tidyverse)
+
+library(gt)
+library("webshot")
+#install.packages("webshot")
+webshot::install_phantomjs()  # Needed for saving as PNG
+
+source(here("workflow/setup.R"))
+
+```
+
+# Summary
+
+This markdown is to explore and re-form the data products that Julia
+sent over. The goal is a database that we can query for each year,
+capturing difference in wastewater pollution that might result in
+upgrades, new builds etc.
+
+From our team meeting in May 2025:
+
+Objective is to isolate / determine what is driving any changes we are
+seeing between time-stamps in the coastal impact rasters (answer for the
+“why”)
+
+Reasons one might expect there is a difference:
+
+-   TMK / point no longer exists (house demolished)
+
+-   TMK / point is a new build (house built or replaced with something
+    larger)
+
+-   Cesspool was upgraded to septic or higher OSDS was eliminated and
+    hooked up to central system
+
+Other reasons we know there might be a difference:
+
+-   We changed how we quantify impact
+
+![Drawing from Brainstorm with Mary, May
+2025](images/whiteboard_drawing.png){width="376"}
+
+
+# Step 1: Determine starting point
+
+
+## Examine Raw Data
+
+Julia shared the OSDS permits as well as the Dwelling data, but she did not share the TMK data. So I'll have to get that myself. I also had to manually re-save the data she sent because some of it was in xlsx format, and some of it was in txt formats. I saved all to csvs before reading into R.
+
+Issues to look out for:
+- different TMK styles?
+- dates: where are the pre-2009 data points?
+
+
+
+```{r}
+
+# read in raw data
+permit_data_raw <- read_csv(here("data/osds/shared-data/2009_Present_IWSList_Permits.csv"))
+spec(permit_data)
+
+dwell_data_raw <- read_csv(here("data/osds/shared-data/2009_Present_IWSList_Permits.csv"))
+
+# after looking at the mess of the data here is some code to try and read it in nicely
+
+# Load necessary package
+library(readr)
+
+# Read in the tab-delimited data for Hawaii
+hi_df <- read_delim(here("data/osds/shared-data/Dwellings/Hawaii_DWELDAT2023.TXT"),
+                    delim = "\t",
+                    col_names = FALSE, na = c("", "NA"),
+                    col_types = cols(
+                      X1 = col_character()
+                    ))
+
+# Assign useful names to selected columns based best guess. Its not confirmed though and the raw data would be better. 
+
+hi_df_selected <- hi_df %>%
+  transmute(
+    tax_map_key = X1,
+    tax_year = X3,
+    dwelling_id = X4,
+    style = X13,
+    full_baths = X20,
+    half_baths = X21,
+    bedrooms = X22,
+    total_rooms = X19,# this might not be right
+    year_built = X23,
+    occupancy = X25,
+    #sqft = X30
+  )
+
+# View the result
+head(hi_df_selected)
+
+
+```
+
+Conclusions so far: this is going to require more data from Julia because what she sent does not have enough information for me to feel confident about the column names. 
+
+It would be really helpful to have year built as well as type of building / occupancy to help us figure out those "grey areas". so does the original data that matches the metadata exactly still exist somewhere? 
+
+## Examine Intermediate Products
+
+```{r}
+
+int_gdb_path <- here("data/osds/shared-data/Intermediate_Products.gdb")
+
+int_layers <- st_layers(int_gdb_path)
+
+hi_int <- st_read(file.path(int_gdb_path), layer= "HAW_2023_update_backup_06_06_24")
+
+hi_int_clean <- hi_int %>% 
+  
+
+```
+
+
+
+
+
+Old code
+
+```{r}
+gdb_path <- here("data/osds/FINAL_OSDS_Products.gdb")
+
+layers <- st_layers(gdb_path)
+
+oahu_osds_23 <- st_read(file.path(gdb_path), layer = "Oahu_OSDS_2023") %>% 
+  clean_names() %>% 
+  mutate(class_desc = case_when(
+    osds_class == 1 ~ "1: Septic - Tank, Bed, or Trench",
+    osds_class == 2 ~ "2: Septic - Seepage Pit (or unknown)",
+    osds_class == 3 ~ "3: Compost Toilet, Grey Water System, or ATU Pit",
+    osds_class == 4 ~ "4: Cesspool",
+    osds_class == 5 ~ "5: Multiple types",
+    TRUE ~ "unknown"
+  ))
+
+
+total_pre2008 <- sum(oahu_osds_23$osds_qty[oahu_osds_23$year == "pre 2009"], na.rm = TRUE) #13175
+
+
+oahu_osds_2009_2023 <- oahu_osds_23 %>% 
+  #clean_names() %>% 
+  filter(year != "pre 2009") %>% 
+  mutate(osds_class = as.integer(osds_class)) %>% 
+  #mutate(year = ifelse(year == "pre 2009",2008,year)) %>% 
+  mutate(year = as.Date(year, format = "%Y")) %>% 
+  mutate(year = year(year)) %>% 
+  rowid_to_column()
+
+total <- sum(oahu_osds_2009_2023$osds_qty)
+
+oahu_osds_agg <- oahu_osds_2009_2023 %>% 
+  as.data.frame() %>% 
+  select(-starts_with("point")) %>% 
+  group_by(year, class_desc) %>% 
+  summarize(
+    total = sum(osds_qty)
+  )
+  
+oahu_osds_table <- oahu_osds_agg %>%
+  pivot_wider(id_cols = "class_desc", names_from = "year", values_from = "total") %>% 
+  adorn_totals(where = c("row","col"))
+
+
+table_gt <- gt(oahu_osds_table)
+gtsave(table_gt, "table_output.png")
+
+# number by year, oahu
+year_bar <- ggplot(oahu_osds_agg, aes(x = year, y = total, group = class_desc))+
+  geom_bar(stat = "identity", position = "stack",aes(fill = class_desc))+
+  theme_bw()
+
+year_bar
+
+
+
+# older 
+
+oahu_osds_pre2009 <- oahu_osds_23 %>% 
+  #clean_names() %>% 
+  filter(year == "pre 2009") %>% 
+  mutate(osds_class = as.integer(osds_class)) %>% 
+  #mutate(year = ifelse(year == "pre 2009",2008,year)) %>% 
+  mutate(year = as.Date(year, format = "%Y")) %>% 
+  mutate(year = year(year)) %>% 
+  rowid_to_column()
+
+
+oahu_osds_old_agg <- oahu_osds_pre2009 %>% 
+  as.data.frame() %>% 
+  select(-starts_with("point")) %>% 
+  group_by(class_desc) %>% 
+  summarize(
+    total = sum(osds_qty)
+  ) %>% 
+  adorn_totals(where = "row")
+  
+old_table_gt <- gt(oahu_osds_old_agg)
+
+gtsave(old_table_gt, "old_table_output.png")
+```
