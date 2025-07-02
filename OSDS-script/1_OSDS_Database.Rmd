@@ -105,7 +105,7 @@ hi_df_selected <- hi_df %>%
     total_rooms = X19,# this might not be right
     year_built = X23,
     occupancy = X25,
-    #sqft = X30
+    #sqft = X30 # this was definitely not right
   )
 
 # View the result
@@ -115,6 +115,17 @@ head(hi_df_selected)
 ```
 
 Conclusions so far: this is going to require more data from Julia because what she sent does not have enough information for me to feel confident about the column names. 
+
+Look at islands that are not separated like this:
+
+```{r}
+
+
+
+
+
+```
+
 
 It would be really helpful to have year built as well as type of building / occupancy to help us figure out those "grey areas". so does the original data that matches the metadata exactly still exist somewhere? 
 
