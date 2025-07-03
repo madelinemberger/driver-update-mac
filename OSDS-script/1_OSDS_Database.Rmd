@@ -14,13 +14,15 @@ editor_options:
 library(sf)
 library(terra)
 library(here)
+library(readxl)
 library(janitor)
 library(tidyverse)
 
+
 library(gt)
-library("webshot")
+#library("webshot")
 #install.packages("webshot")
-webshot::install_phantomjs()  # Needed for saving as PNG
+#webshot::install_phantomjs()  # Needed for saving as PNG
 
 source(here("workflow/setup.R"))
 
@@ -56,19 +58,18 @@ Other reasons we know there might be a difference:
 ![Drawing from Brainstorm with Mary, May
 2025](images/whiteboard_drawing.png){width="376"}
 
-
 # Step 1: Determine starting point
-
 
 ## Examine Raw Data
 
-Julia shared the OSDS permits as well as the Dwelling data, but she did not share the TMK data. So I'll have to get that myself. I also had to manually re-save the data she sent because some of it was in xlsx format, and some of it was in txt formats. I saved all to csvs before reading into R.
+Julia shared the OSDS permits as well as the Dwelling data, but she did
+not share the TMK data. So I'll have to get that myself. I also had to
+manually re-save the data she sent because some of it was in xlsx
+format, and some of it was in txt formats. I saved all to csvs before
+reading into R.
 
-Issues to look out for:
-- different TMK styles?
-- dates: where are the pre-2009 data points?
-
-
+Issues to look out for: - different TMK styles? - dates: where are the
+pre-2009 data points?
 
 ```{r}
 
@@ -111,39 +112,190 @@ hi_df_selected <- hi_df %>%
 # View the result
 head(hi_df_selected)
 
+# oahu data used fixed width
+
+library(readr)
+
+# Define widths and optionally names
+widths <- c(1, 1, 4, 4, 20, 1, 4, 20, 20, 20, 20, 20, 2, 20, 2, 2, 2, 2, 1, 1,
+            2, 2, 2, 20, 1, 20, 20, 20, 20, 20, 6, 2, 4, 3, 20, 20, 30, 4, 4, 1,
+            4, 20, 6, 3, 3, 6, 6, 6)
+
+names <- c("JUR", "PARID", "TAXYR", "CARD", "USER20", "VALMETH", "STORIES", "USER6", "USER7", "USER8",
+           "USER9", "USER10", "STYLE", "USER11", "EXTWALL", "ROOFMAT", "INTWALL", "FLOORTYP", "HEAT", "AIRC",
+           "RMTOT", "BEDROOM", "FIXBATH", "FIXHALF", "FPLACE", "USER12", "USER13", "USER14", "USER15", "USER16",
+           "USER17", "USER18", "YRBUILT", "EFFYR", "USER19", "USER21", "USER22", "CONDITION", "GRADE", "OCCUPANCY",
+           "VALMETH2", "USER23", "SQFT_LIV", "SQFT_BSMT", "SQFT_ADJ", "USER24", "USER25", "USER26")
+
+# Read the fixed-width file?
+df <- read_fwf(here("data/osds/shared-data/Dwellings/Oahu_Dweldat2020.txt"), fwf_widths(widths, col_names = names), col_types = cols(.default = "c"))
+
+# This didnt work
+#df_2 <- read_delim(here("data/osds/shared-data/Dwellings/Oahu_Dweldat2020.txt"), delim = "\t", col_names = FALSE)
+
+# This didnt work
+# df <- read_delim(here("data/osds/shared-data/Dwellings/Oahu_Dweldat2020.txt"),
+#                  delim = " ",         # space delimiter
+#                  col_names = FALSE,
+#                  trim_ws = TRUE,
+#                  skip_empty_rows = TRUE,
+#                  progress = FALSE)
+
+
+lines <- read_lines(here("data/osds/shared-data/Dwellings/Oahu_Dweldat2020.txt"))
+split_data <- str_split_fixed(lines, pattern = " {2,}", n = 48)
+
+df <- as.data.frame(split_data, stringsAsFactors = FALSE)
+
+colnames(df) <- c(
+  "JUR", "PARID", "TAXYR", "CARD", "USER20", "VALMETH", "STORIES", "USER6", "USER7", "USER8",
+  "USER9", "USER10", "STYLE", "USER11", "EXTWALL", "ROOFMAT", "INTWALL", "FLOORTYP", "HEAT", "AIRC",
+  "RMTOT", "BEDROOM", "FIXBATH", "FIXHALF", "FPLACE", "USER12", "USER13", "USER14", "USER15", "USER16",
+  "USER17", "USER18", "YRBUILT", "EFFYR", "USER19", "USER21", "USER22", "CONDITION", "GRADE", "OCCUPANCY",
+  "VALMETH2", "USER23", "SQFT_LIV", "SQFT_BSMT", "SQFT_ADJ", "USER24", "USER25", "USER26"
+)
 
 ```
 
-Conclusions so far: this is going to require more data from Julia because what she sent does not have enough information for me to feel confident about the column names. 
+Conclusions so far: this is going to require more data from Julia
+because what she sent does not have enough information for me to feel
+confident about the column names.
 
 Look at islands that are not separated like this:
 
 ```{r}
 
 
+maui_dwell_raw <- read_xlsx(here("data/osds/shared-data/Dwellings/Maui_Dwelling_2015_2022.xlsx"))
+
+
+kauai_dwell <- read_xlsx(here("data/osds/shared-data/Dwellings/Kauai_BedBathCount_2014_2020_081423.xlsx"))
 
 
 
 ```
 
-
-It would be really helpful to have year built as well as type of building / occupancy to help us figure out those "grey areas". so does the original data that matches the metadata exactly still exist somewhere? 
+Questions thoughts from Maui and Kauai Raw: It would be really helpful
+to have year built as well as type of building / occupancy to help us
+figure out those "grey areas". so does the original data that matches
+the metadata exactly still exist somewhere? A bit confused by the TMKs
+for Maui, seem to all start with different numbers yet are the same length as kauai?
 
 ## Examine Intermediate Products
 
+
+### Hawaii
+
 ```{r}
 
+# hawaii - only one with just one file
 int_gdb_path <- here("data/osds/shared-data/Intermediate_Products.gdb")
 
 int_layers <- st_layers(int_gdb_path)
 
 hi_int <- st_read(file.path(int_gdb_path), layer= "HAW_2023_update_backup_06_06_24")
 
-hi_int_clean <- hi_int %>% 
-  
+# what are the three datasets? 
+
+hi_pre2010 <- hi_int %>% filter(DATA_SET == "2010&Prior") #53530
+hi_post2010 <- hi_int %>% filter(DATA_SET == "Post 2010") #6093
+hi_na <- hi_int %>% filter(is.na(DATA_SET)) #4069 
+
+
+# how many duplicate TMKS? do all of these have different dates?
+
+hi_dup_tmks <- hi_int %>% group_by(TMK) %>% 
+  filter(n()>1) 
+
+# remove all information related to OSDS except date, bed and bath and reshape
+# clean up dates so we just have a year column for each one
+
+hi_dup_tmks_cl <- hi_dup_tmks %>% 
+  select(TMK,OSDS_TYPE,OSDS_QTY,COMMERCIAL,B_ROOMS,BATHS,EFF_DATE,DATE_BASIS,DATA_SET) %>% 
+  mutate(date_clean = as_date(EFF_DATE)) %>% 
+  mutate(year = year(date_clean)) %>% 
+  st_drop_geometry()
+
+
+# osds type by year
+
+hi_dup_tmks_osds_wd <- hi_dup_tmks_cl %>% 
+  arrange(year) %>% 
+  pivot_wider(id_cols = c(TMK,COMMERCIAL), names_from = year, values_from = OSDS_TYPE)
+
+
+# osds qty by year
+
+hi_dup_tmks_qty_wd <- hi_dup_tmks_cl %>% 
+  arrange(year) %>% 
+  pivot_wider(id_cols = c(TMK,COMMERCIAL), names_from = year, values_from = OSDS_QTY)
+
+
+# bedrooms by year
+
+hi_dup_tmks_bedrooms_wd <- hi_dup_tmks_cl %>% 
+  arrange(year) %>% 
+  pivot_wider(id_cols = c(TMK,COMMERCIAL), names_from = year, values_from = B_ROOMS)
+
+# bathrooms by year
+
+hi_dup_tmks_bathrooms_wd <- hi_dup_tmks_cl %>% 
+  arrange(year) %>% 
+  pivot_wider(id_cols = c(TMK,COMMERCIAL), names_from = year, values_from = BATHS)
+
 
 ```
 
+Overall Hawaii seems pretty "clean" I guess. My main questions are:
+- Why would a TMK have -999 for bedrooms and an actual number for baths? I think this might be from a weird join prior. But might be good to check if that's coming from the dwell data
+
+
+### Maui 
+```{r}
+
+st_layers(int_gdb_path)
+
+# these look exactly the same so not sure, maybe one just has Julia's update columns and the other does not?
+maui_iws1 <- st_read(file.path(int_gdb_path), layer= "MauiNui_2023_IWS_update") #2024
+
+maui_iws2 <- st_read(file.path(int_gdb_path), layer= "Mau_IWS_31_01_2010_to_03_15_2023") #2388
+
+# do these have the same data? what are the extra 364?
+
+maui_in1_butnot2 <- setdiff(maui_iws1$tmk, maui_iws2$tmk) 
+
+
+
+
+```
+
+### Kauai
+
+```{r}
+
+kauai_iws1 <- st_read(file.path(int_gdb_path), layer= "KAU_IWS_2023_update")
+ 
+kauai_iws2 <- st_read(file.path(int_gdb_path), layer= "On_site_Sewage_Disposal_Systems_Kauai_nutrient_update") #
+
+
+
+```
+
+
+### Oahu
+
+```{r}
+
+
+oahu_points_with_dwell <- st_read(file.path(int_gdb_path), layer= "Oahu_address_Points_Including_Dwellings_IWS") #11
+ 
+oahu_iws2 <- st_read(file.path(int_gdb_path), layer= "OAH_OSDS_2019_V2_merge_missing_points_10_01_24")
+
+
+
+```
+
+So these are confusing to me. 
 
 
 
