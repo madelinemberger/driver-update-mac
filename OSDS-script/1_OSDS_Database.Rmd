@@ -58,9 +58,9 @@ Other reasons we know there might be a difference:
 ![Drawing from Brainstorm with Mary, May
 2025](images/whiteboard_drawing.png){width="376"}
 
-# Step 1: Determine starting point
+# Step 1: Data Prep and Cleaning
 
-## Examine Raw Data
+## Clean Raw Dwell Data
 
 Julia shared the OSDS permits as well as the Dwelling data, but she did
 not share the TMK data. So I'll have to get that myself. I also had to
@@ -73,93 +73,154 @@ pre-2009 data points?
 
 ```{r}
 
+
+# the hawaii dwell data is tab delimited but I think that is a result of some kind of transformation that occurrred. 
+
 # read in raw data
 permit_data_raw <- read_csv(here("data/osds/shared-data/2009_Present_IWSList_Permits.csv"))
 spec(permit_data)
-
-dwell_data_raw <- read_csv(here("data/osds/shared-data/2009_Present_IWSList_Permits.csv"))
 
 # after looking at the mess of the data here is some code to try and read it in nicely
 
 # Load necessary package
 library(readr)
 
-# Read in the tab-delimited data for Hawaii
-hi_df <- read_delim(here("data/osds/shared-data/Dwellings/Hawaii_DWELDAT2023.TXT"),
-                    delim = "\t",
-                    col_names = FALSE, na = c("", "NA"),
-                    col_types = cols(
-                      X1 = col_character()
-                    ))
 
-# Assign useful names to selected columns based best guess. Its not confirmed though and the raw data would be better. 
 
-hi_df_selected <- hi_df %>%
-  transmute(
-    tax_map_key = X1,
-    tax_year = X3,
-    dwelling_id = X4,
-    style = X13,
-    full_baths = X20,
-    half_baths = X21,
-    bedrooms = X22,
-    total_rooms = X19,# this might not be right
-    year_built = X23,
-    occupancy = X25,
-    #sqft = X30 # this was definitely not right
-  )
+# oahu data has the fixed width preserved, which I counted by hand and confirmed at least the first bunch columns match. The last few are also easy to tell which columns so below I assign them manually.
 
-# View the result
-head(hi_df_selected)
+# hi data was a mess, but the most promising outcome was to try and replace the tabs with spaces (8 seemed like the best bet), and then read it in using the same column specs from the metatdata
 
-# oahu data used fixed width
-
-library(readr)
 
 # Define widths and optionally names
-widths <- c(1, 1, 4, 4, 20, 1, 4, 20, 20, 20, 20, 20, 2, 20, 2, 2, 2, 2, 1, 1,
-            2, 2, 2, 20, 1, 20, 20, 20, 20, 20, 6, 2, 4, 3, 20, 20, 30, 4, 4, 1,
-            4, 20, 6, 3, 3, 6, 6, 6)
-
-names <- c("JUR", "PARID", "TAXYR", "CARD", "USER20", "VALMETH", "STORIES", "USER6", "USER7", "USER8",
-           "USER9", "USER10", "STYLE", "USER11", "EXTWALL", "ROOFMAT", "INTWALL", "FLOORTYP", "HEAT", "AIRC",
-           "RMTOT", "BEDROOM", "FIXBATH", "FIXHALF", "FPLACE", "USER12", "USER13", "USER14", "USER15", "USER16",
-           "USER17", "USER18", "YRBUILT", "EFFYR", "USER19", "USER21", "USER22", "CONDITION", "GRADE", "OCCUPANCY",
-           "VALMETH2", "USER23", "SQFT_LIV", "SQFT_BSMT", "SQFT_ADJ", "USER24", "USER25", "USER26")
-
-# Read the fixed-width file?
-df <- read_fwf(here("data/osds/shared-data/Dwellings/Oahu_Dweldat2020.txt"), fwf_widths(widths, col_names = names), col_types = cols(.default = "c"))
-
-# This didnt work
-#df_2 <- read_delim(here("data/osds/shared-data/Dwellings/Oahu_Dweldat2020.txt"), delim = "\t", col_names = FALSE)
-
-# This didnt work
-# df <- read_delim(here("data/osds/shared-data/Dwellings/Oahu_Dweldat2020.txt"),
-#                  delim = " ",         # space delimiter
-#                  col_names = FALSE,
-#                  trim_ws = TRUE,
-#                  skip_empty_rows = TRUE,
-#                  progress = FALSE)
-
-
-lines <- read_lines(here("data/osds/shared-data/Dwellings/Oahu_Dweldat2020.txt"))
-split_data <- str_split_fixed(lines, pattern = " {2,}", n = 48)
-
-df <- as.data.frame(split_data, stringsAsFactors = FALSE)
-
-colnames(df) <- c(
-  "JUR", "PARID", "TAXYR", "CARD", "USER20", "VALMETH", "STORIES", "USER6", "USER7", "USER8",
-  "USER9", "USER10", "STYLE", "USER11", "EXTWALL", "ROOFMAT", "INTWALL", "FLOORTYP", "HEAT", "AIRC",
-  "RMTOT", "BEDROOM", "FIXBATH", "FIXHALF", "FPLACE", "USER12", "USER13", "USER14", "USER15", "USER16",
-  "USER17", "USER18", "YRBUILT", "EFFYR", "USER19", "USER21", "USER22", "CONDITION", "GRADE", "OCCUPANCY",
-  "VALMETH2", "USER23", "SQFT_LIV", "SQFT_BSMT", "SQFT_ADJ", "USER24", "USER25", "USER26"
+col_specs <- fwf_positions(
+  start = c(
+    1, 2, 15, 20, 24, 44, 48, 52, 72, 92, 112, 132, 152, 154,
+    179, 186, 193, 199, 201, 202, 206, 211, 216, 218, 238, 239,
+    259, 279, 299, 319, 343, 355, 357, 361, 364, 384, 404, 434,
+    438, 443, 444, 448, 470, 479, 490, 495, 503, 510
+  ),
+  end = c(
+    1, 14, 18, 23, 43, 44, 47, 71, 91, 111, 131, 151, 153, 173,
+    180, 187, 194, 200, 201, 201, 207, 212, 217, 237, 238, 258,
+    278, 298, 318, 342, 354, 356, 360, 363, 383, 403, 433, 437,
+    442, 443, 447, 469, 478, 489, 494, 502, 509, 515  # <-- adjust last few by hand
+  )
 )
+
+
+
+# Read the fixed-width file
+oahu_raw_dwell <- read_fwf(
+  here("data/osds/shared-data/Dwellings/Oahu_Dweldat2020.txt"),
+  col_positions = col_specs,   # or actual names from metadata
+  na = c("", "NA"),
+  col_types = cols(.default = col_character())
+) %>% mutate(across(everything(), ~trimws(.)))
+
+# remame columns based on visual examination
+
+
+oahu_dwell_rename <- oahu_raw_dwell %>% 
+  select(jurisid = X1,
+         taxid = X2,
+         condo_dwell = X6,
+         full_baths = X15,
+         half_baths = X16,
+         total_rooms = X21,
+         bedrooms = X22,
+         year_built = X42) %>% 
+  mutate(year_built = substr(year_built,1,4))
+
+# fix three that were off
+
+oahu_fix <- oahu_raw_dwell %>% 
+  filter(X2 %in% c("920060090000","130110480001","130110480003")) %>% 
+  select(jurisid = X1,
+         taxid = X2,
+         condo_dwell = X6,
+         full_baths = X15,
+         half_baths = X16,
+         total_rooms = X21,
+         bedrooms = X22,
+         year_built = X42) %>% 
+  mutate(year_built = substr(year_built,5,8)
+  )
+
+
+# re join to full data set and save
+
+oahu_dwell_clean <- oahu_dwell_rename %>% 
+  filter(taxid %!in% c("920060090000","130110480001","130110480003")) %>% 
+  rbind(oahu_fix)
+
+
+st_write(oahu_dwell_clean,
+         here("data/osds/generated-data/oahu_dwelldat_clean.csv"))
+
+
+
+############ hawaii data, expanded version #####################
+# note to create this I ran the following code in my terminal : expand -t 8 Hawaii_DWELDAT2023.TXT > hi_expanded.txt
+
+
+hi_df <- read_fwf(
+  file = here("data/osds/shared-data/Dwellings/hi_expanded.txt"),
+  col_positions = col_specs,  # from your metadata start/end bytes
+  col_types = cols(.default = col_character())
+)
+
+head(hi_df,5)
+
+
+# 1) Read as TAB-delimited (keep everything as text)
+df_raw <- read_delim(here("data/osds/shared-data/Dwellings/Hawaii_DWELDAT2023.TXT"),
+                    delim = "\t",
+                    col_names = FALSE, 
+                    na = c("", "NA"),
+                    col_types = cols(.default = col_character())
+) %>% mutate(row_id = row_number(), .before = 1)
+
+# ok this is better
+hi_since_2020 <- df_raw %>% 
+  mutate(year_built = as.numeric(X23)) %>% 
+  filter(X23 > 2019)
+
+# which are nas?
+
+hi_since_2020na <- hi_since_2020 %>% filter(is.na(year_built)) # we dont want anyway
+
+# filter out the nas
+
+hi_since_2020 <- hi_since_2020 %>% 
+  filter(!is.na(year_built))
+
+issues_summ <- hi_since_2020 %>%
+  summarise(
+    n_na_X5 = sum(is.na(X5)),
+    unique_X5 = list(unique(na.omit(X5))),
+    n_na_X12 = sum(is.na(X12)),
+    unique_X12 = list(unique(na.omit(X12)))
+  )
+
+
+suspect_rows <- hi_since_2020 %>%
+  mutate(
+    X5_has_space  = grepl(" ", X5),
+    X12_has_space = grepl(" ", X12)
+  ) %>%
+  filter(X5_has_space == T | X12_has_space ==T)
+  
+  
+suspect_row_ids <- suspect_rows %>% pull(row_id)
+
+# now read those in raw to see what they should be. see if you can work with this one
+raw_lines <- read_lines(here("data/osds/shared-data/Dwellings/hi_expanded.txt"))[suspect_row_ids]
+raw_lines
 
 ```
 
-Conclusions so far: this is going to require more data from Julia
-because what she sent does not have enough information for me to feel
-confident about the column names.
+Sending these to Julia to make sure they line up. 
 
 Look at islands that are not separated like this:
 

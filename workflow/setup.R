@@ -20,3 +20,7 @@ dropbox_dir <- c(
 
 
 driver_dir <- file.path(dropbox_dir,"Drivers")
+
+# functions
+
+'%!in%' <- function(x,y)!('%in%'(x,y))
