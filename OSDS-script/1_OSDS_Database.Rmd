@@ -164,13 +164,13 @@ st_write(oahu_dwell_clean,
 # note to create this I ran the following code in my terminal : expand -t 8 Hawaii_DWELDAT2023.TXT > hi_expanded.txt
 
 
-hi_df <- read_fwf(
-  file = here("data/osds/shared-data/Dwellings/hi_expanded.txt"),
-  col_positions = col_specs,  # from your metadata start/end bytes
-  col_types = cols(.default = col_character())
-)
-
-head(hi_df,5)
+# hi_df <- read_fwf(
+#   file = here("data/osds/shared-data/Dwellings/hi_expanded.txt"),
+#   col_positions = col_specs,  # from your metadata start/end bytes
+#   col_types = cols(.default = col_character())
+# )
+# 
+# head(hi_df,5)
 
 
 # 1) Read as TAB-delimited (keep everything as text)
@@ -197,7 +197,7 @@ hi_since_2020 <- hi_since_2020 %>%
 
 issues_summ <- hi_since_2020 %>%
   summarise(
-    n_na_X5 = sum(is.na(X5)),
+    n_na_X5 = sum(is.na(X5)), 
     unique_X5 = list(unique(na.omit(X5))),
     n_na_X12 = sum(is.na(X12)),
     unique_X12 = list(unique(na.omit(X12)))
@@ -218,9 +218,34 @@ suspect_row_ids <- suspect_rows %>% pull(row_id)
 raw_lines <- read_lines(here("data/osds/shared-data/Dwellings/hi_expanded.txt"))[suspect_row_ids]
 raw_lines
 
+# rename columsn to our best guess so we can get on with our lives
+
+hi_since_2020_cl <- hi_since_2020 %>% 
+  select(
+    row_id,
+    taxid = X1,
+    full_baths = X15,
+    half_baths = X16,
+    total_rooms = X17,# this was x21 for oahu
+    bedrooms = X18, # this was x22 for oahu
+    year_built = X23
+  )
+
+
+st_write(hi_since_2020_cl,
+         here("data/osds/generated-data/hi_2023_dwell_clean.csv"))
+
 ```
 
 Sending these to Julia to make sure they line up. 
+
+Ok at this point I am just going to pick ones to go with:
+
+x16 = halfbath
+x15 = full bath
+x17 = total rooms
+x18 = total beddroms
+
 
 Look at islands that are not separated like this:
 
@@ -229,18 +254,101 @@ Look at islands that are not separated like this:
 
 maui_dwell_raw <- read_xlsx(here("data/osds/shared-data/Dwellings/Maui_Dwelling_2015_2022.xlsx"))
 
+maui_dwell_cl <- maui_dwell_raw %>% 
+  select(
+    parid = PARID, # need to add 2 to this number
+    year_built = `Year Built`,
+    full_baths = `Full Baths`,
+    half_baths = `Half Baths`,
+    total_rooms = `Total Rooms`,
+    bedrooms = `Bed Rooms`
+  ) %>% 
+  mutate(taxid = paste0(2,parid)) %>% 
+  mutate(across(3:6, ~as.numeric(.x))) %>% 
+  select(-parid) %>% 
+  mutate(island = "Maui")
+
 
 kauai_dwell <- read_xlsx(here("data/osds/shared-data/Dwellings/Kauai_BedBathCount_2014_2020_081423.xlsx"))
+
+kauai_dwell_cl <- kauai_dwell %>% 
+  select(
+    parid = PARID, # need to add 2 to this number
+    full_baths = `Full Baths`,
+    half_baths = `Half Baths`,
+    bedrooms = `Bed Rooms`
+  ) %>% 
+  mutate(taxid = paste0(4,parid)) %>% 
+  mutate(across(2:4, ~as.numeric(.x))) %>% 
+  mutate(total_rooms = NA,
+         year_built = NA,
+         island = "Kauai") %>% 
+  select(-parid)
+
+oahu_dwell_clean <- read_csv(here("data/osds/generated-data/oahu_dwelldat_clean.csv")) %>% 
+  mutate(taxid = paste0(jurisid,taxid)) %>% 
+  mutate(across(4:7, ~as.numeric(.x))) %>% 
+  select(-jurisid, -condo_dwell) %>% 
+  mutate(island = "Oahu")
+
+
+# merge with Oahu because at this point, all actions applied to each of these datasets will be the same. Hi remain separate 
+# so we can look at WH work. 
+
+oahu_maui_kaui_dwell_join <- rbind(oahu_dwell_clean, maui_dwell_cl, kauai_dwell_cl)
+
+
+st_write(oahu_maui_kaui_dwell_join,
+         here("data/osds/generated-data/oahu_maui_kaui_dwell_merged.csv"))
+```
+
+Questions / thoughts from Maui and Kauai Raw: 
+Maui looks pretty good
+It would be really helpful to have year built as well as type of building / occupancy to help us
+figure out those "grey areas". so does the original data that matches
+the metadata exactly still exist somewhere? Or did this come this way? 
+Especially for Kauai, because we dont have total rooms OR year built. 
+
+
+
+# Step 2: Join Clean Datasets to most recent TMK points and record differences
+
+```{r}
+
+# read in tmk points from HI state GIS
+
+# join to hawaii
+
+
+# 
+
+
 
 
 
 ```
 
-Questions thoughts from Maui and Kauai Raw: It would be really helpful
-to have year built as well as type of building / occupancy to help us
-figure out those "grey areas". so does the original data that matches
-the metadata exactly still exist somewhere? A bit confused by the TMKs
-for Maui, seem to all start with different numbers yet are the same length as kauai?
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 ## Examine Intermediate Products
 
