@@ -19,7 +19,7 @@ library(janitor)
 library(tidyverse)
 
 
-library(gt)
+#library(gt)
 #library("webshot")
 #install.packages("webshot")
 #webshot::install_phantomjs()  # Needed for saving as PNG
@@ -58,7 +58,9 @@ Other reasons we know there might be a difference:
 ![Drawing from Brainstorm with Mary, May
 2025](images/whiteboard_drawing.png){width="376"}
 
-# Step 1: Data Prep and Cleaning
+Each of the phases below corresponds to the workflow chart in the Hawaii Driver Data Google Drive. To reduce environment clutter, phases stand alone, i.e. you can start at a phase and all dependencies should be loaded in the contained code chunks. 
+
+# Phase 1: Data Prep and Cleaning
 
 ## Clean Raw Dwell Data
 
@@ -68,9 +70,15 @@ manually re-save the data she sent because some of it was in xlsx
 format, and some of it was in txt formats. I saved all to csvs before
 reading into R.
 
-Issues to look out for: - different TMK styles? - dates: where are the
-pre-2009 data points?
+Data Cleaning steps:
+- parse data into correct columns (for HI, this was very sketchy)
+- look for exact duplicates of data with ALL COLUMNS - note which columns are differentiating them
+  - note: you canʻt do this for HI or Oahu because the parsing is so sketch
+- select columns of interest
+- look for duplicates again
+  - if we find duplicates, need to figure out which column is differentiting dwellings. this is very important. we also need to add a unique ID to each row. 
 
+### Parse Oahu and Hawaii
 ```{r}
 
 
@@ -78,7 +86,7 @@ pre-2009 data points?
 
 # read in raw data
 permit_data_raw <- read_csv(here("data/osds/shared-data/2009_Present_IWSList_Permits.csv"))
-spec(permit_data)
+spec(permit_data_raw)
 
 # after looking at the mess of the data here is some code to try and read it in nicely
 
@@ -120,10 +128,11 @@ oahu_raw_dwell <- read_fwf(
 
 # remame columns based on visual examination
 
-
 oahu_dwell_rename <- oahu_raw_dwell %>% 
   select(jurisid = X1,
          taxid = X2,
+         tax_year = X3,
+         card = X4,
          condo_dwell = X6,
          full_baths = X15,
          half_baths = X16,
@@ -138,6 +147,8 @@ oahu_fix <- oahu_raw_dwell %>%
   filter(X2 %in% c("920060090000","130110480001","130110480003")) %>% 
   select(jurisid = X1,
          taxid = X2,
+         tax_year = X3,
+         card = X4,
          condo_dwell = X6,
          full_baths = X15,
          half_baths = X16,
@@ -155,8 +166,9 @@ oahu_dwell_clean <- oahu_dwell_rename %>%
   rbind(oahu_fix)
 
 
-st_write(oahu_dwell_clean,
-         here("data/osds/generated-data/oahu_dwelldat_clean.csv"))
+write_csv(oahu_dwell_clean,
+         here("data/osds/generated-data/oahu_dwelldat_clean.csv"),
+         append = FALSE)
 
 
 
@@ -224,6 +236,8 @@ hi_since_2020_cl <- hi_since_2020 %>%
   select(
     row_id,
     taxid = X1,
+    tax_year = X3,
+    card = X4,
     full_baths = X15,
     half_baths = X16,
     total_rooms = X17,# this was x21 for oahu
@@ -232,8 +246,8 @@ hi_since_2020_cl <- hi_since_2020 %>%
   )
 
 
-st_write(hi_since_2020_cl,
-         here("data/osds/generated-data/hi_2023_dwell_clean.csv"))
+write_csv(hi_since_2020_cl,
+         here("data/osds/generated-data/hi_2023_dwell_selectedcols.csv"))
 
 ```
 
@@ -247,308 +261,688 @@ x17 = total rooms
 x18 = total beddroms
 
 
-Look at islands that are not separated like this:
+### Clean Maui and Kauai
+
+Look at county data that are not separated like the HI and Oahu data.
+
+
+**Maui Data Notes**
+In this data, the columns that identify either a unique dwelling OR A CHANGE to a in dwelling are as follows:
+- tax id (parid)
+- year built
+- CARD number - Property-record-card docs note that multi-card parcels are used when a parcel has several primary buildings; the card is “# of #” for that parcel. These could be ADUs or other outbuildings. 
+
+These are variable columns
+- number of bedrooms
+- number of bathrooms
+- half baths
+- total rooms
+- year built
+
+Volatile columns:
+- Tax year
+- first column id (#)
 
 ```{r}
 
+# read in maui data
+maui_dwell_raw <- read_xlsx(here("data/osds/shared-data/Dwellings/Maui_Dwelling_2015_2022.xlsx")) %>% 
+  clean_names()
 
-maui_dwell_raw <- read_xlsx(here("data/osds/shared-data/Dwellings/Maui_Dwelling_2015_2022.xlsx"))
+colnames(maui_dwell_raw)
 
-maui_dwell_cl <- maui_dwell_raw %>% 
-  select(
-    parid = PARID, # need to add 2 to this number
-    year_built = `Year Built`,
-    full_baths = `Full Baths`,
-    half_baths = `Half Baths`,
-    total_rooms = `Total Rooms`,
-    bedrooms = `Bed Rooms`
+# drop any fully duplicated rows (note - there are none due to id col)
+
+maui_df0 <- maui_dwell_raw %>% select(-number) %>% distinct()
+
+# set columns 
+
+id_cols <- c("year_built","parid","card")
+tax_year_col <- "tax_year"
+total_rooms <- "total_rooms"
+beds_col <- "bed_rooms"
+baths_col <- "full_baths"
+
+
+# add a flag for cards that are clearly residential. any without bed and bath information might be non res buildings
+
+# df1 <- maui_df0 %>%
+#   mutate(
+#     is_res_card = ( !!sym(beds_col) > 0 | !!sym(baths_col) > 0 ), "res")
+
+df1 <- maui_df0
+
+# get one row per unique parcel id and card number, ignoring tax year
+
+unique_dwellings <- df1 %>%
+  filter(is_res_card) %>%
+  distinct(across(all_of(id_cols)), .keep_all = TRUE)
+
+# list cols that might vary and this matters because of the way we calculate OSDS
+
+var_cols <- c("total_rooms","half_baths","full_baths","bed_rooms")
+
+
+# 2) Order by year and flag changes in attributes versus the previous year 
+
+df_check <- df1 %>% 
+  filter(is_res_card) %>% 
+  group_by(across(all_of(id_cols))) %>% 
+  arrange(.data[[tax_year_col]], .by_group = TRUE) 
+
+df_changes <- df1 %>% 
+  filter(is_res_card) %>% 
+  group_by(across(all_of(id_cols))) %>% 
+  arrange(.data[[tax_year_col]], .by_group = TRUE) %>% 
+  mutate(
+    across(
+      all_of(var_cols),
+      list(
+        changed = ~. != lag(.),
+        increased = ~. > lag(.),
+        decreased = ~. < lag(.)
+      ),
+      .names = ".{col}_{.fn}"
+    ),
+    change_any = rowSums(across(ends_with("_changed"), ~ .x %in% TRUE), na.rm = TRUE) > 0,
+    change_category = dplyr::case_when(
+      rowSums(across(ends_with("_increased"), ~ .x %in% TRUE), na.rm = TRUE) > 0 ~
+        "remodel_or_expansion",
+      rowSums(across(ends_with("_decreased"), ~ .x %in% TRUE), na.rm = TRUE) > 0 ~
+        "demolition_or_correction",
+      change_any ~ "attribute_changed",
+      TRUE ~ NA_character_
+    )
   ) %>% 
-  mutate(taxid = paste0(2,parid)) %>% 
-  mutate(across(3:6, ~as.numeric(.x))) %>% 
-  select(-parid) %>% 
-  mutate(island = "Maui")
+  ungroup()
 
 
-kauai_dwell <- read_xlsx(here("data/osds/shared-data/Dwellings/Kauai_BedBathCount_2014_2020_081423.xlsx"))
 
-kauai_dwell_cl <- kauai_dwell %>% 
-  select(
-    parid = PARID, # need to add 2 to this number
-    full_baths = `Full Baths`,
-    half_baths = `Half Baths`,
-    bedrooms = `Bed Rooms`
-  ) %>% 
-  mutate(taxid = paste0(4,parid)) %>% 
-  mutate(across(2:4, ~as.numeric(.x))) %>% 
-  mutate(total_rooms = NA,
-         year_built = NA,
-         island = "Kauai") %>% 
-  select(-parid)
+# which houses have multiple years, id cols and differnt cards? this is likely multiple dwellings on a parcel
 
-oahu_dwell_clean <- read_csv(here("data/osds/generated-data/oahu_dwelldat_clean.csv")) %>% 
-  mutate(taxid = paste0(jurisid,taxid)) %>% 
-  mutate(across(4:7, ~as.numeric(.x))) %>% 
-  select(-jurisid, -condo_dwell) %>% 
-  mutate(island = "Oahu")
+same_year_diff_cards <- df1 %>%
+  filter(is_res_card) %>%
+  group_by(parid = .data[["parid"]], Year = .data[[tax_year_col]]) %>%
+  summarise(n_cards = n_distinct(.data[["card"]]),
+            beds_var = n_distinct(.data[[beds_col]], na.rm = TRUE),
+            baths_var = n_distinct(.data[[baths_col]], na.rm = TRUE),
+            .groups = "drop") %>%
+  filter(n_cards > 1 & (beds_var > 1 | baths_var > 1))
+
+# which houses have the same year, the same card, but conflicting bed and bath values?
+
+conflicts_same_card_same_year <- df1 %>%
+  filter(is_res_card) %>%
+  group_by(across(all_of(c(id_cols, tax_year_col)))) %>%
+  summarise(beds_var = n_distinct(.data[[beds_col]], na.rm = TRUE),
+            baths_var = n_distinct(.data[[baths_col]], na.rm = TRUE),
+            .groups = "drop") %>%
+  filter(beds_var > 1 | baths_var > 1) # yay this is zero!
+
+######### create final df of events and summary df for QAQC report
+
+# keep baseline row per dwelling (earliest year) + every change row
+final_events <- df_changes %>%
+  group_by(across(all_of(id_cols))) %>%
+  arrange(tax_year, .by_group = TRUE) %>%
+  mutate(is_baseline = row_number() == 1) %>% # which is the og observation
+  filter(is_baseline | change_any) %>% # keep the baseline and any we flagged as a change
+  # label the event
+  mutate(event_type = case_when(
+    is_baseline & !change_any ~ "baseline",
+    change_category == "remodel_or_expansion" ~ "remodel_or_expansion",
+    change_category == "demolition_or_correction" ~ "demolition_or_correction",
+    change_any ~ "attribute_changed",
+    TRUE ~ "baseline"
+  )) %>%
+  # list WHICH fields changed on each change row (blank for baseline)
+  rowwise() %>%
+  mutate(changed_fields = {
+    flags <- c_across(ends_with("_changed"))
+    cols <- names(flags)[flags]
+    cols <- str_remove(cols, "_changed$")
+    paste(cols, collapse = ", ")
+  }) %>%
+  ungroup()
+
+# create a summary df and save both
+
+final_events_view <- final_events %>%
+  select(all_of(id_cols), tax_year, event_type, all_of(var_cols))
 
 
-# merge with Oahu because at this point, all actions applied to each of these datasets will be the same. Hi remain separate 
-# so we can look at WH work. 
+write_csv(final_events,
+          here("data/osds/generated-data/final_maui_dwelling_withflags.csv"))
 
-oahu_maui_kaui_dwell_join <- rbind(oahu_dwell_clean, maui_dwell_cl, kauai_dwell_cl)
+write_csv(final_events_view,
+          here("data/osds/generated-data/final_maui_dwelling_clean.csv"))
+
+# so now we can grab the unique ids from these (tmks) and use that for the spatial data.
 
 
-st_write(oahu_maui_kaui_dwell_join,
-         here("data/osds/generated-data/oahu_maui_kaui_dwell_merged.csv"))
+
+
+
 ```
 
 Questions / thoughts from Maui and Kauai Raw: 
-Maui looks pretty good
-It would be really helpful to have year built as well as type of building / occupancy to help us
-figure out those "grey areas". so does the original data that matches
-the metadata exactly still exist somewhere? Or did this come this way? 
-Especially for Kauai, because we dont have total rooms OR year built. 
+Maui looks pretty good - they key columns ended up being card, tmk year along with the parid, number of bed and bath etc. This has allowed me to flag entries that are duplicate properties, but have undergone a change that matters to osds.
 
+But a quick google search revealed this is way low. I think we are missing a lot of condo data
 
+Likely missing stock:
 
-# Step 2: Join Clean Datasets to most recent TMK points and record differences
+Condos and apartment complexes often get represented in tax data as one improvement record (one (parid, card)) for the entire building, without per-unit bedroom counts.
+
+In those cases, the bed_rooms field might be blank, zero, or just reflect a model unit, not the sum across all units.
+
+Some tax datasets also exclude certain categories like timeshares, vacation rentals, or “common element” parcels from bedroom counts.
+
+**Maui QA QC**
 
 ```{r}
 
-# read in tmk points from HI state GIS
+total_bedrooms <- sum(unique_dwellings$bed_rooms, na.rm = T)
 
-# join to hawaii
+total_na_bedrooms <- sum(is.na(unique_dwellings$bed_rooms)) #72 are NA
+
+total_0_bedrooms <- sum(unique_dwellings$bed_rooms == 0, na.rm = T) # 15 are 0
+
+# which are NA or zero? do they all have the same condo flag?
+
+unique_dwellings_na0 <- unique_dwellings %>% 
+  filter(bed_rooms == 0 | is.na(bed_rooms))
 
 
-# 
+# look at the raw data for these guys
 
+maui_condos <- maui_dwell_raw %>% 
+  filter(parid %in% unique_dwellings_na0$parid)
 
+# how many unique id columns do we have in this data?
 
+unique_combos <- maui_df0 %>%
+  distinct(parid, card, year_built)
 
+head(unique_combos, 20)
+
+# counts by year build
+
+coutns_by_yearbuilt <- maui_df0 %>%
+  distinct(parid, card, year_built) %>%
+  count(year_built, sort = TRUE)
 
 ```
 
+Ok mystery solved I think - this is only data from 2010. so I can only track changes since then. That's ok. 
 
+**Kauai Data Notes** 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-## Examine Intermediate Products
-
-
-### Hawaii
+From the Maui experience, it would be really helpful to have year built, card number AND tax year to sort out changes to a dwelling. But since we have card number let's see if we can figure it out: 
 
 ```{r}
 
-# hawaii - only one with just one file
-int_gdb_path <- here("data/osds/shared-data/Intermediate_Products.gdb")
+kauai_dwell_raw <- read_xlsx(here("data/osds/shared-data/Dwellings/Kauai_BedBathCount_2014_2020_081423.xlsx")) %>% clean_names()
 
-int_layers <- st_layers(int_gdb_path)
+colnames(kauai_dwell_raw)
 
-hi_int <- st_read(file.path(int_gdb_path), layer= "HAW_2023_update_backup_06_06_24")
+# remove any total duplicates
 
-# what are the three datasets? 
+kauai_df0 <- kauai_dwell_raw %>% select(-number) %>% distinct() # the same nrow as raw, good
 
-hi_pre2010 <- hi_int %>% filter(DATA_SET == "2010&Prior") #53530
-hi_post2010 <- hi_int %>% filter(DATA_SET == "Post 2010") #6093
-hi_na <- hi_int %>% filter(is.na(DATA_SET)) #4069 
+# create columns 
 
+# set columns 
 
-# how many duplicate TMKS? do all of these have different dates?
+id_cols <- c("parid","card")
+total_rooms <- "total_rooms"
+beds_col <- "bed_rooms"
+baths_col <- "full_baths"
 
-hi_dup_tmks <- hi_int %>% group_by(TMK) %>% 
-  filter(n()>1) 
+# flag for residential buildings only
 
-# remove all information related to OSDS except date, bed and bath and reshape
-# clean up dates so we just have a year column for each one
+df1 <- kauai_df0 %>%
+  mutate(
+    is_res_card = ( !!sym(beds_col) > 0 | !!sym(baths_col) > 0 ), "res") # all residential
 
-hi_dup_tmks_cl <- hi_dup_tmks %>% 
-  select(TMK,OSDS_TYPE,OSDS_QTY,COMMERCIAL,B_ROOMS,BATHS,EFF_DATE,DATE_BASIS,DATA_SET) %>% 
-  mutate(date_clean = as_date(EFF_DATE)) %>% 
-  mutate(year = year(date_clean)) %>% 
-  st_drop_geometry()
-
-
-# osds type by year
-
-hi_dup_tmks_osds_wd <- hi_dup_tmks_cl %>% 
-  arrange(year) %>% 
-  pivot_wider(id_cols = c(TMK,COMMERCIAL), names_from = year, values_from = OSDS_TYPE)
-
-
-# osds qty by year
-
-hi_dup_tmks_qty_wd <- hi_dup_tmks_cl %>% 
-  arrange(year) %>% 
-  pivot_wider(id_cols = c(TMK,COMMERCIAL), names_from = year, values_from = OSDS_QTY)
-
-
-# bedrooms by year
-
-hi_dup_tmks_bedrooms_wd <- hi_dup_tmks_cl %>% 
-  arrange(year) %>% 
-  pivot_wider(id_cols = c(TMK,COMMERCIAL), names_from = year, values_from = B_ROOMS)
-
-# bathrooms by year
-
-hi_dup_tmks_bathrooms_wd <- hi_dup_tmks_cl %>% 
-  arrange(year) %>% 
-  pivot_wider(id_cols = c(TMK,COMMERCIAL), names_from = year, values_from = BATHS)
-
-
-```
-
-Overall Hawaii seems pretty "clean" I guess. My main questions are:
-- Why would a TMK have -999 for bedrooms and an actual number for baths? I think this might be from a weird join prior. But might be good to check if that's coming from the dwell data
-
-
-### Maui 
-```{r}
-
-st_layers(int_gdb_path)
-
-# these look exactly the same so not sure, maybe one just has Julia's update columns and the other does not?
-maui_iws1 <- st_read(file.path(int_gdb_path), layer= "MauiNui_2023_IWS_update") #2024
-
-maui_iws2 <- st_read(file.path(int_gdb_path), layer= "Mau_IWS_31_01_2010_to_03_15_2023") #2388
-
-# do these have the same data? what are the extra 364?
-
-maui_in1_butnot2 <- setdiff(maui_iws1$tmk, maui_iws2$tmk) 
-
-
-
-
-```
-
-### Kauai
-
-```{r}
-
-kauai_iws1 <- st_read(file.path(int_gdb_path), layer= "KAU_IWS_2023_update")
- 
-kauai_iws2 <- st_read(file.path(int_gdb_path), layer= "On_site_Sewage_Disposal_Systems_Kauai_nutrient_update") #
-
-
-
-```
-
-
-### Oahu
-
-```{r}
-
-
-oahu_points_with_dwell <- st_read(file.path(int_gdb_path), layer= "Oahu_address_Points_Including_Dwellings_IWS") #11
- 
-oahu_iws2 <- st_read(file.path(int_gdb_path), layer= "OAH_OSDS_2019_V2_merge_missing_points_10_01_24")
-
-
-
-```
-
-So these are confusing to me. 
-
-
-
-
-Old code
-
-```{r}
-gdb_path <- here("data/osds/FINAL_OSDS_Products.gdb")
-
-layers <- st_layers(gdb_path)
-
-oahu_osds_23 <- st_read(file.path(gdb_path), layer = "Oahu_OSDS_2023") %>% 
-  clean_names() %>% 
-  mutate(class_desc = case_when(
-    osds_class == 1 ~ "1: Septic - Tank, Bed, or Trench",
-    osds_class == 2 ~ "2: Septic - Seepage Pit (or unknown)",
-    osds_class == 3 ~ "3: Compost Toilet, Grey Water System, or ATU Pit",
-    osds_class == 4 ~ "4: Cesspool",
-    osds_class == 5 ~ "5: Multiple types",
-    TRUE ~ "unknown"
-  ))
-
-
-total_pre2008 <- sum(oahu_osds_23$osds_qty[oahu_osds_23$year == "pre 2009"], na.rm = TRUE) #13175
-
-
-oahu_osds_2009_2023 <- oahu_osds_23 %>% 
-  #clean_names() %>% 
-  filter(year != "pre 2009") %>% 
-  mutate(osds_class = as.integer(osds_class)) %>% 
-  #mutate(year = ifelse(year == "pre 2009",2008,year)) %>% 
-  mutate(year = as.Date(year, format = "%Y")) %>% 
-  mutate(year = year(year)) %>% 
-  rowid_to_column()
-
-total <- sum(oahu_osds_2009_2023$osds_qty)
-
-oahu_osds_agg <- oahu_osds_2009_2023 %>% 
-  as.data.frame() %>% 
-  select(-starts_with("point")) %>% 
-  group_by(year, class_desc) %>% 
-  summarize(
-    total = sum(osds_qty)
+# flag and filter for buildings with toilets
+df1 <- kauai_df0 %>%
+  mutate(
+    no_toilet_flag = !(coalesce(full_baths, 0) > 0 | coalesce(half_baths, 0) > 0)
   )
-  
-oahu_osds_table <- oahu_osds_agg %>%
-  pivot_wider(id_cols = "class_desc", names_from = "year", values_from = "total") %>% 
-  adorn_totals(where = c("row","col"))
 
-
-table_gt <- gt(oahu_osds_table)
-gtsave(table_gt, "table_output.png")
-
-# number by year, oahu
-year_bar <- ggplot(oahu_osds_agg, aes(x = year, y = total, group = class_desc))+
-  geom_bar(stat = "identity", position = "stack",aes(fill = class_desc))+
-  theme_bw()
-
-year_bar
+df2 <- df1 %>% filter(no_toilet_flag == FALSE) # 136 obs dont have a toilet, rest are good
 
 
 
-# older 
+# get one row per unique parcel id and card number, ignoring tax year
 
-oahu_osds_pre2009 <- oahu_osds_23 %>% 
-  #clean_names() %>% 
-  filter(year == "pre 2009") %>% 
-  mutate(osds_class = as.integer(osds_class)) %>% 
-  #mutate(year = ifelse(year == "pre 2009",2008,year)) %>% 
-  mutate(year = as.Date(year, format = "%Y")) %>% 
-  mutate(year = year(year)) %>% 
-  rowid_to_column()
+unique_dwellings <- df2 %>%
+  #filter(is_res_card) %>%
+  distinct(across(all_of(id_cols)), .keep_all = TRUE) # fewer. this means there are duplicate parids that indicate changes rather than duplicates
 
+# list cols that might vary and this matters because of the way we calculate OSDS
 
-oahu_osds_old_agg <- oahu_osds_pre2009 %>% 
-  as.data.frame() %>% 
-  select(-starts_with("point")) %>% 
-  group_by(class_desc) %>% 
-  summarize(
-    total = sum(osds_qty)
+var_cols <- c("half_baths","full_baths","bed_rooms")
+
+df_check <- df2 %>% 
+  #filter(is_res_card) %>% 
+  group_by(across(all_of(id_cols))) %>% 
+  arrange(parid, .by_group = TRUE) 
+
+df_changes <- df2 %>% 
+  #filter(is_res_card) %>% 
+  group_by(across(all_of(id_cols))) %>% 
+  arrange(parid, .by_group = TRUE) %>% 
+  mutate(
+    across(
+      all_of(var_cols),
+      list(
+        changed = ~. != lag(.),
+        increased = ~. > lag(.),
+        decreased = ~. < lag(.)
+      ),
+      .names = ".{col}_{.fn}"
+    ),
+    change_any = rowSums(across(ends_with("_changed"), ~ .x %in% TRUE), na.rm = TRUE) > 0,
+    change_category = dplyr::case_when(
+      rowSums(across(ends_with("_increased"), ~ .x %in% TRUE), na.rm = TRUE) > 0 ~
+        "remodel_or_expansion",
+      rowSums(across(ends_with("_decreased"), ~ .x %in% TRUE), na.rm = TRUE) > 0 ~
+        "demolition_or_correction",
+      change_any ~ "attribute_changed",
+      TRUE ~ NA_character_
+    )
   ) %>% 
-  adorn_totals(where = "row")
-  
-old_table_gt <- gt(oahu_osds_old_agg)
+  ungroup()
 
-gtsave(old_table_gt, "old_table_output.png")
+# interesting - so there are no changes recorded for kauai. without tax year or year built, we can't really determine that
+
+
+final_events_view <- df_changes %>%
+  select(all_of(id_cols),all_of(var_cols), change_any) %>% 
+  mutate(year_built = NA,
+         tax_year = NA,
+         island = "Kauai") %>% 
+  distinct()
+
+
+write_csv(final_events_view,
+          here("data/osds/generated-data/final_oahu_dwelling_clean.csv"))
+
+
+
 ```
+
+Because we dont have tax year or year built, and because none of the rows here flagged as a possible change, I can only assume that this dwelling data represents a snap shot in time (ie 2023). It would be better if we could re-request the data with all tax assessments. 
+
+### Clean Oahu and Hawaii
+
+After figuring out a good workflow with the Maui data (the best dataset, I'd say), apply to the Oahu and Hawaii parsed data.
+
+**Oahu Data Notes**
+
+I went back and made sure I had all the key columns in the parsing code: parid, taxyear, card, year built, and the beds and baths. then I repeated the Maui code.
+
+The card column doesn't look quite right, some are really high, but it could still help us ID duplicates...maybe. I'll try!
+
+
+```{r}
+
+# read in parsed data
+
+oahu_raw <- read_csv(here("data/osds/generated-data/oahu_dwelldat_clean.csv"))
+
+# check for any fully duplicated rows
+
+oahu_df0 <- oahu_raw %>% distinct() %>% 
+  mutate(across(6:9, ~as.numeric(.x))) %>% 
+  rename(bed_rooms = bedrooms)# none dropped, good!
+
+# set columns 
+
+id_cols <- c("year_built","taxid","card")
+tax_year_col <- "tax_year"
+total_rooms <- "total_rooms"
+beds_col <- "bed_rooms"
+baths_col <- "full_baths"
+
+# set cols and find unique entries
+
+unique_dwellings <- oahu_df0 %>%
+  distinct(across(all_of(id_cols)), .keep_all = TRUE) #all unique, like kauai
+
+# define columns that vary
+var_cols <- c("total_rooms","half_baths","full_baths","bed_rooms")
+
+# Group by id cols, order by year, and flag any differences
+
+df_check <- oahu_df0 %>% 
+  group_by(across(all_of(id_cols))) %>% 
+  arrange(.data[[tax_year_col]], .by_group = TRUE) 
+
+df_changes <- oahu_df0 %>% 
+  group_by(across(all_of(id_cols))) %>% 
+  arrange(.data[[tax_year_col]], .by_group = TRUE) %>% 
+  mutate(
+    across(
+      all_of(var_cols),
+      list(
+        changed = ~. != lag(.),
+        increased = ~. > lag(.),
+        decreased = ~. < lag(.)
+      ),
+      .names = ".{col}_{.fn}"
+    ),
+    change_any = rowSums(across(ends_with("_changed"), ~ .x %in% TRUE), na.rm = TRUE) > 0,
+    change_category = dplyr::case_when(
+      rowSums(across(ends_with("_increased"), ~ .x %in% TRUE), na.rm = TRUE) > 0 ~
+        "remodel_or_expansion",
+      rowSums(across(ends_with("_decreased"), ~ .x %in% TRUE), na.rm = TRUE) > 0 ~
+        "demolition_or_correction",
+      change_any ~ "attribute_changed",
+      TRUE ~ NA_character_
+    )
+  ) %>% 
+  ungroup()
+
+# this didnt change anything. 
+
+# but this hints taht this dataset has the condos:
+
+same_year_diff_cards <- oahu_df0 %>%
+  group_by(taxid = .data[["taxid"]], Year = .data[[tax_year_col]]) %>%
+  summarise(n_cards = n_distinct(.data[["card"]]),
+            beds_var = n_distinct(.data[[beds_col]], na.rm = TRUE),
+            baths_var = n_distinct(.data[[baths_col]], na.rm = TRUE),
+            .groups = "drop") %>%
+  filter(n_cards > 1 & (beds_var > 1 | baths_var > 1)) # 7452, can check condo against this. 
+
+# which houses have the same year, the same card, but conflicting bed and bath values?
+
+conflicts_same_card_same_year <- oahu_df0 %>%
+  group_by(across(all_of(c(id_cols, tax_year_col)))) %>%
+  summarise(beds_var = n_distinct(.data[[beds_col]], na.rm = TRUE),
+            baths_var = n_distinct(.data[[baths_col]], na.rm = TRUE),
+            .groups = "drop") %>%
+  filter(beds_var > 1 | baths_var > 1) # yay zero!
+
+
+final_events_view <- df_changes %>%
+  select(all_of(id_cols),all_of(var_cols), change_any) %>% 
+  mutate(island = "Hawaii") %>% 
+  distinct()
+
+
+write_csv(same_year_diff_cards,
+          here("data/osds/generated-data/oahu_condos_likley.csv"))
+
+
+write_csv(final_events_view,
+          here("data/osds/generated-data/final_oahu_dwelling_clean.csv"))
+
+
+```
+
+**Hawaii data notes**
+
+Lastly feed Hawaii data through the process - still working with 2020
+
+```{r}
+
+
+hi_parsed <- read_csv(here("data/osds/generated-data/hi_2023_dwell_selectedcols.csv"))
+
+# check for any fully duplicated rows
+
+hi_df0 <- hi_parsed %>% distinct() %>% 
+  select(-row_id) %>% 
+  mutate(across(4:8, ~as.numeric(.x))) %>% 
+  rename(bed_rooms = bedrooms)# none dropped, good!
+
+# set columns 
+
+id_cols <- c("year_built","taxid","card")
+tax_year_col <- "tax_year"
+total_rooms <- "total_rooms"
+beds_col <- "bed_rooms"
+baths_col <- "full_baths"
+
+# find unique dwellings - with dwellings defined as buildings
+
+unique_dwellings <- hi_df0 %>%
+  distinct(across(all_of(id_cols)), .keep_all = TRUE) # none dropped
+
+
+# define columns that vary
+var_cols <- c("total_rooms","half_baths","full_baths","bed_rooms")
+
+# Group by id cols, order by year, and flag any differences
+
+df_check <- hi_df0 %>% 
+  group_by(across(all_of(id_cols))) %>% 
+  arrange(.data[[tax_year_col]], .by_group = TRUE) 
+
+df_changes <- hi_df0 %>% 
+  group_by(across(all_of(id_cols))) %>% 
+  arrange(.data[[tax_year_col]], .by_group = TRUE) %>% 
+  mutate(
+    across(
+      all_of(var_cols),
+      list(
+        changed = ~. != lag(.),
+        increased = ~. > lag(.),
+        decreased = ~. < lag(.)
+      ),
+      .names = ".{col}_{.fn}"
+    ),
+    change_any = rowSums(across(ends_with("_changed"), ~ .x %in% TRUE), na.rm = TRUE) > 0,
+    change_category = dplyr::case_when(
+      rowSums(across(ends_with("_increased"), ~ .x %in% TRUE), na.rm = TRUE) > 0 ~
+        "remodel_or_expansion",
+      rowSums(across(ends_with("_decreased"), ~ .x %in% TRUE), na.rm = TRUE) > 0 ~
+        "demolition_or_correction",
+      change_any ~ "attribute_changed",
+      TRUE ~ NA_character_
+    )
+  ) %>% 
+  ungroup()
+
+# which houses have mulitple cards and buildings potentially?
+
+same_year_diff_cards <- hi_df0 %>%
+  group_by(taxid = .data[["taxid"]], Year = .data[[tax_year_col]]) %>%
+  summarise(n_cards = n_distinct(.data[["card"]]),
+            beds_var = n_distinct(.data[[beds_col]], na.rm = TRUE),
+            baths_var = n_distinct(.data[[baths_col]], na.rm = TRUE),
+            .groups = "drop") %>%
+  filter(n_cards > 1 & (beds_var > 1 | baths_var > 1)) # 13 can check condo # since 2020 against this. 
+
+# which houses have the same year, the same card, but conflicting bed and bath values?
+
+conflicts_same_card_same_year <- hi_df0 %>%
+  group_by(across(all_of(c(id_cols, tax_year_col)))) %>%
+  summarise(beds_var = n_distinct(.data[[beds_col]], na.rm = TRUE),
+            baths_var = n_distinct(.data[[baths_col]], na.rm = TRUE),
+            .groups = "drop") %>%
+  filter(beds_var > 1 | baths_var > 1) # yay zero!
+
+
+final_events_view <- df_changes %>%
+  select(all_of(id_cols),all_of(var_cols), change_any) %>% 
+  mutate(island = "Hawaii") %>% 
+  distinct()
+
+write_csv(final_events_view,
+          here("data/osds/generated-data/final_hawaii_dwelling_clean.csv"))
+
+write_csv(same_year_diff_cards,
+          here("data/osds/generated-data/hi_condos_likley.csv"))
+
+```
+
+
+
+# Phase 2: Join dwell data to most recent HI statewide parcels, permit data, and record differences
+
+First Iʻll work on spatializing the dwell data. Then Iʻll work on joining in the permit data. 
+
+Important: the TMK field for the parcels is only 9 digits. This is because the last 4 digits in the dwell data, as per the metadata, are codes for the horizontal property regime. This is needed for units that share a parcel of land but may have many different owners, like a condo where each unit is individually owned. If the last 4 digits are 0000, then usually that means the parcel is a single owner. 
+
+I will split the dwell TMKS into a TMK column and an HPR column, so we preserve that info, then use the shortened 9 digit tmk to join to parcel centroids. 
+
+```{r clean-parcels}
+
+# read in tmk points from HI state GIS, select columsn we need
+
+library(sf)
+
+tmk_parcels <- st_read(here("data/osds/raw-data-downloaded/tmk_state_parcels.shp/tmk_state.shp")) # note lots of warnings about non closures
+
+tmk_hi <- filter(tmk_parcels,county == "Hawaii")
+
+mapview(head(tmk_hi)) # just check out a few
+
+# valid?
+
+tmk_valid <- tmk_parcels %>% mutate(valid_yn = st_is_valid(geometry))
+
+not_valid <- tmk_valid[tmk_valid$valid_yn == FALSE, ] ## 444 observations, or 0.1 percent
+
+tmk_valid <- tmk_valid[tmk_valid$valid_yn == TRUE, ] # filter out the non valid ones, weʻll come back to those
+
+# get centroids of valid geoms only, save
+
+tmk_parcel_centroid <- st_centroid(tmk_valid)
+
+st_write(tmk_parcel_centroid,
+         here("data/osds/generated-data/tmk_centroids.gpkg"),
+         layer = "tmk_centroids") # using geopacakge because .shp cant deal with tmk field
+
+```
+
+
+Since some parcels are not valid. weʻll check the OSDS permit data against these as well as the dwell data. if they match any, figure out how to include. if not, then yay we can just move on
+
+Note - this will be a one to many join, in that the same centroid will be added to mulitple rows. THAT IS OK. the HPR will help us determine if that is a mistake or because there are mulitple individually owned dwellings on the property. 
+
+Also note - for HI, we only grabbed dwell data for units built since 2020 for now. Re-do once we have better data. 
+
+```{r}
+
+options(scipen = 999)
+
+# read in clean dwell data and create a new column 
+
+oahu_maui_kauai_dwell <- read_csv(here("data/osds/generated-data/oahu_maui_kaui_dwell_merged.csv"))
+
+oahu_maui_kauai_dwell_forjoin <- oahu_maui_kauai_dwell %>% 
+  mutate(tmk = substr(taxid,1,9),
+         hpr = substr(taxid,10,13))
+
+hi_dwell <- read_csv(here("data/osds/generated-data/hi_2023_dwell_clean.csv")) #2487
+
+hi_dwell_forjoin <- hi_dwell %>% 
+  mutate(tmk = substr(taxid,1,9),
+         hpr = substr(taxid,10,13))
+
+# read in tmk centroids, filter out HI for clarity 
+
+tmk_centroids <- st_read(here("data/osds/generated-data/tmk_centroids.gpkg"),
+                         layer = "tmk_centroids")
+
+tmk_oahu_maui_kauai <- tmk_centroids %>% filter(county != "Hawaii") %>% rename(tmk = TMK_txt)
+
+tmk_hi <- tmk_centroids %>% filter(county == "Hawaii") %>% rename(tmk = TMK_txt)
+
+# join to dwell data - left join
+
+hi_dwell_sf <- left_join(hi_dwell_forjoin,tmk_hi, by = "tmk") 
+
+
+oahu_maui_kaui_dwell_sf <- left_join(oahu_maui_kauai_dwell_forjoin,tmk_oahu_maui_kauai, by = "tmk") 
+
+# after confirm no major join issues, clean up columns and save
+
+hi_dwell_sf_clean <- hi_dwell_sf %>% 
+  select(2:9,zone,qpub_link,valid_yn)
+
+oahu_maui_kauai_dwell_sf_clean <- oahu_maui_kaui_dwell_sf %>% select(1:9,zone,qpub_link,valid_yn)
+
+# generate data first QAQC report - which tmks do not have dwells? we can look at and summarize zone ids (digit 3) to see how these look. And, do any dwells have no tmks?
+
+hi_dwell_nosf <- hi_dwell_sf %>% 
+  mutate(geom_yn = st_is_empty(geom)) %>% 
+  filter(geom_yn == TRUE) # yay 0 observations
+
+oahu_etc_dwell_nosf <- oahu_maui_kaui_dwell_sf %>%
+  mutate(geom_yn = st_is_empty(geom)) %>% 
+  filter(geom_yn == TRUE) # ok there are 1037 that are missing a spatial point. does this mean they no longer exist? save for QA QC report
+
+
+# tmk no dwell summary data
+
+tmk_not_indwell <- tmk_centroids %>% 
+  filter(TMK_txt %!in% oahu_maui_kauai_dwell_sf_clean$tmk) %>% 
+  filter(TMK_txt %!in% hi_dwell_sf_clean$tmk)
+
+length(unique(tmk_not_indwell$TMK_txt)) #212868
+nrow(tmk_not_indwell) #212934 <- some tmks are repeated
+
+total_tmkwdwell <- length(unique(oahu_maui_kauai_dwell_sf_clean$tmk)) + length(unique(oahu_maui_kauai_dwell_sf_clean$tmk)) #337296
+
+total_tmk_check <- total_tmkwdwell + nrow(tmk_not_indwell)
+
+nrow(tmk_centroids)
+total_tmk_check
+
+
+```
+
+Ok so two things came out of this:
+1) there are ~1000 dwellings in the Oahu, Maui and Kauai dataset that did not have a matching parcel TMK. 
+
+2) there are duplicate TMKS in the parcel dataset. I can tell because when I joined them to the oahu maui kauai dwell data, the overall row count got larger. Look more closely at these below. 
+
+
+```{r}
+# add a column that ids whether the data within is duplicated
+tmk_oahu_maui_kauai <- tmk_centroids %>% filter(county != "Hawaii") %>% rename(tmk = TMK_txt) %>% 
+  mutate(is_duplicate_tmk = duplicated(.[,"tmk"]))
+
+tmk_oahu_maui_kauai_dups <- filter(tmk_oahu_maui_kauai,is_duplicate_tmk == TRUE) # weird
+
+# if its not duplicate tmks, what is it?
+
+# do a set dif on the dwell data before and after the tmk join to examine the extra ~200 rows
+
+oahu_etc_setdiff <- setdiff(oahu_maui_kauai_dwell_sf_clean$tmk, oahu_maui_kauai_dwell_forjoin$tmk)
+
+oahu_etc_setdiff <- setdiff(oahu_maui_kauai_dwell_sf_clean, oahu_maui_kauai_dwell_forjoin$tmk)
+
+# since the tmks arenʻt the issue, add a row id and see what is "exploding" the numbers out by 200
+
+# what happens if we remove EXACT duplicates?
+
+oahu_maui_kauai_dwell_sf_clean_nodups <- distinct(oahu_maui_kauai_dwell_sf_clean)
+
+```
+
+Ah ok so there are a lot of duplicates in the RAW dwell data. The key thing we need to decide is if we want to just move ahead and treat these as duplicates, or if we want to think about if their duplication means something. For example, I want to be careful with kauai because we have less information for those dwellings.  
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
