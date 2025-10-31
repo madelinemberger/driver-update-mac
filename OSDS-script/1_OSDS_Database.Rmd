@@ -748,7 +748,7 @@ df_changes <- hi_df0 %>%
   ) %>% 
   ungroup()
 
-# which houses have mulitple cards and buildings potentially?
+# which houses have mulitple cards and buildings potentially? save these as "condos likely"
 
 same_year_diff_cards <- hi_df0 %>%
   group_by(taxid = .data[["taxid"]], Year = .data[[tax_year_col]]) %>%
@@ -807,7 +807,7 @@ mapview(head(tmk_hi)) # just check out a few
 
 tmk_valid <- tmk_parcels %>% mutate(valid_yn = st_is_valid(geometry))
 
-not_valid <- tmk_valid[tmk_valid$valid_yn == FALSE, ] ## 444 observations, or 0.1 percent
+not_valid <- tmk_valid[tmk_valid$valid_yn == FALSE, ] ## 444 observations, or 0.1 percent.
 
 tmk_valid <- tmk_valid[tmk_valid$valid_yn == TRUE, ] # filter out the non valid ones, weʻll come back to those
 
@@ -930,6 +930,44 @@ oahu_maui_kauai_dwell_sf_clean_nodups <- distinct(oahu_maui_kauai_dwell_sf_clean
 
 Ah ok so there are a lot of duplicates in the RAW dwell data. The key thing we need to decide is if we want to just move ahead and treat these as duplicates, or if we want to think about if their duplication means something. For example, I want to be careful with kauai because we have less information for those dwellings.  
 
+
+#Separate Mish: Dwelling data scraped from old OTP data and WH
+
+For the update, we only requested dwell data for units built or renovated (?) since 2010. That won't allow us to create a full dwelling database though from just that data. So we have 2 options:
+1. Use the old projects to fill in any dwelling data from before 2010 - this then relies on Joey's methods that everything was captured
+2. Re-request dwell data for longer time span from the counties. Upside is that then we feel really confident about our records. Downsides are that the counties are difficult, and the data will be huge. 
+
+First I'll see if using the old data (OTP and WH) gives us a somewhat accurate portrayal of the number of dwellings THAT HAVE EXISTED in Hawaii (not just ones that were built).
+
+
+```{r}
+
+# read in wh - see if we can scrape off any data other than dwell. Confused as to if this will give us a good record though. 
+
+hi_2017_OSDS <- st_read(here("data/osds/shared-data/Hawaii_2017/Haw_Island_OSDS_2017.shp")) %>% clean_names()
+
+hi_2017_building_data <- hi_2017_OSDS %>% 
+  select(tmk,commercial,b_rooms,baths,date_basis, data_set) # 59623
+
+
+# are there any duplicated TMKS?
+
+hi_2017_bd_dupcheck <- hi_2017_building_data %>%
+  mutate(is_duplicate_tmk = duplicated(.[,"tmk"])) %>% 
+  filter(is_duplicate_tmk == TRUE) # yes
+
+
+# Get all duplicates
+
+hi_2017_building_data_dup <- filter(hi_2017_building_data, tmk %in% hi_2017_bd_dupcheck$tmk)
+
+```
+
+Questions for Joey:
+1. Where did the commercial flag some from? Dwell data or OSDS permit data
+2. QAQC for bed and bathroom numbers? 
+
+We could run the change thing on here to ID renovations, tear downs etc. But its not as clear without understanding what filtering happened before. 
 
 
 

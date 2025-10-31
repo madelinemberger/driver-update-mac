@@ -1,0 +1,564 @@
+---
+title: "Oahu OSDS Timeseries"
+author: "Madeline Berger"
+date: "2025-10-27"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+
+library(here)
+
+source(here("workflow/setup.R"))
+
+```
+
+## Read in, examine and clean raw Dwell Data
+
+### About dwelling data: 
+ - obtained from each county, and maintained by each county differently 
+ - records are created for tax assessment purposes, and therefore usually have two key time columns: year built and year assessed.
+ - if the tmk has a second card number, that usually indicates an auxiliary building or additional structure built on the property. 
+
+
+## Data Cleaning steps:
+- parse data into correct columns (for HI, this was very sketchy)
+- look for exact duplicates of data with ALL COLUMNS - note which columns are differentiating them
+  - note: you canʻt do this for HI or Oahu because the parsing is so sketch
+- select columns of interest
+- look for duplicates again
+  - if we find duplicates, need to figure out which column is differentiating dwellings. this is very important. we also need to add a unique ID to each row. 
+
+### Step 1: Clean Up Dwell Data
+
+Parse Oahu Raw files, join all years
+
+This can all be found in the OG driver repository on github. Here I'll start from the clean CSV I wrote to generate products for QA QC report 2
+
+This report should tell us:
+
+- total number of TMKS assessed each year for Oahu
+- how many TMKS are single owner versus multiple owner per year of data
+- how many TMKS have more than one card (i.e. more than one building assessed on the parcel) per year
+- Summary of bedrooms and bathrooms per year?
+
+Note: go back to parsing data and check the card column. 
+
+Resources: 
+
+https://thepapakeacollection.com/2023/03/18/understanding-the-tax-map-key-system-in-hawaii-a-comprehensive-guide/
+
+
+```{r}
+
+library(data.table) # ok I need to look into this more I guess
+
+
+# can I read in the humongous dwell file?
+
+oahu_dwell_path <- file.path(driver_dir,"4_OSDS_N_Runoff/output-data/dwellings/oahu_dwell_clean_2015_2020.csv")
+
+oahu_dwells_cleanedup <- fread(file = oahu_dwell_path)
+
+# summary tables
+
+oahu_dwell_card <- oahu_dwells_cleanedup %>% 
+  filter(card < 5) 
+
+unique(oahu_dwell_card$card) # only 4
+unique(oahu_dwell_card$tax_year) # which dropped out?
+hist(oahu_dwell_card$card)
+
+
+oahu_dwell_otherscard <- oahu_dwells_cleanedup %>% 
+  filter(card >= 5)
+
+unique(oahu_dwell_otherscard$tax_year) # these are in all years. looks like its a data issue where the last digit has been mixed up. let's worry about that later. for now will look at ones with fewer than 5 cards
+
+length(unique(oahu_dwell_otherscard$taxid)) #381 tmk parcels 
+
+# --------------- TMK Card #s by Year ------------------------------------
+
+# A. How many TMKs per tax_year have >1 distinct CARD?
+
+oahu_dwells_cleanedup <- oahu_dwells_cleanedup %>% mutate(card_char = as.character(card))
+
+tmk_multi_by_year <- oahu_dwells_cleanedup %>%
+  group_by(tax_year, taxid) %>%
+  summarize(n_cards = n_distinct(card_char, na.rm = TRUE), .groups = "drop") %>%  
+  filter(n_cards > 1) %>%
+  group_by(tax_year) %>%
+  summarize(n_TMKs_with_multiple_cards = n(), .groups = "drop")
+
+
+# B. Count the number of rows (observations) that belong to TMKs that have multiple cards (per year):
+
+rows_for_multi_TMKs <- oahu_dwells_cleanedup %>%
+  group_by(tax_year, taxid) %>%
+  filter(n_distinct(card_char) > 1) %>%
+  ungroup() %>%
+  count(tax_year, name = "n_rows_from_multi_card_TMKs")
+rows_for_multi_TMKs
+
+
+# C. Percent TMKS that have multiple cards 
+
+
+summary_pct <- oahu_dwells_cleanedup %>%
+  group_by(tax_year, taxid) %>%
+  summarize(n_cards = n_distinct(card_char), .groups = "drop") %>%
+  group_by(tax_year) %>%
+  summarize(
+    total_TMKs = n(),
+    TMKs_with_multiple_cards = sum(n_cards > 1),
+    pct_multi = 100 * TMKs_with_multiple_cards / total_TMKs
+  )
+summary_pct # stays really stable over time.
+
+# D. How many cards per year for TMKS with multiple?
+
+tmk_card_list <- oahu_dwells_cleanedup %>%
+  group_by(tax_year, taxid) %>%
+  summarize(cards = paste(sort(unique(card_char)), collapse = "; "), n_cards = n_distinct(card_char), .groups = "drop") %>%
+  filter(n_cards > 1) %>%
+  arrange(tax_year, taxid)
+
+tmk_card_list
+
+# wide version with column indicating if there are changes in assessment
+
+years <- c("2015","2016","2017","2018","2019","2020")
+
+tmk_card_by_year <- tmk_card_list %>% 
+  pivot_wider(id_cols = taxid, names_from = tax_year, values_from = n_cards) %>% 
+  rowwise() %>%
+  mutate(
+    all_same = if_else(length(unique(c_across(all_of(years)))) == 1, "yes", "no")
+  )
+
+nrow(tmk_card_by_year[tmk_card_by_year$all_same == "no", ]) # 907 have changed cards
+
+# we can pull these lists now to compare to other data. these are possible changes
+
+tmk_with_card_change <- tmk_card_by_year %>% 
+  filter(all_same == "no")
+
+
+
+# ---------------------------------- Total TMKS by Year --------------------------------------- #
+
+tmks_assessed_per_year <- oahu_dwells_cleanedup %>% 
+  group_by(tax_year) %>% 
+  summarize(
+    n_parcels_assessed = n_distinct(taxid, na.rm = TRUE)
+  )
+
+# -------------------------------- Total Bedrooms & Bathrooms per Year ---------------------- #
+
+bedsbath_per_year <- oahu_dwells_cleanedup %>% 
+  mutate(bedrooms = as.numeric(bedrooms),
+         full_baths = as.numeric(full_baths)) %>% 
+  group_by(tax_year) %>% 
+  summarize(
+    n_beds = sum(bedrooms, na.rm = TRUE),
+    n_baths = sum(full_baths, na.rm = TRUE)
+  )
+
+
+# ------------------ Single Level Ownership v Multi level ---------------------- #
+
+# first split column into hpr and the rest
+
+ownership_summary <- oahu_dwells_cleanedup %>%
+  mutate(taxid = as.character(taxid)) %>% 
+  mutate(hpr = substr(taxid,nchar(taxid)-3,nchar(taxid))) %>% 
+  mutate(condo_yes = ifelse(hpr == "0000","no","condo"))
+
+
+ownership_by_year <- ownership_summary %>% 
+  group_by(tax_year, condo_yes) %>% 
+  summarize(
+    n_assessed = n_distinct(taxid)
+  )
+
+# have any previous single level home become a condo over these 5 years?
+
+tmk_converted <- ownership_summary %>% 
+  mutate(taxid_root = substr(taxid,1,8)) %>% 
+  mutate(type = ifelse(hpr == "0000","condo","single_family")) %>% 
+  group_by(taxid_root) %>% 
+  summarise(
+    has_single = any(type == "single_family"),
+    has_condo  = any(type == "condo"),
+    .groups = "drop") %>%
+  filter(has_single & has_condo)
+
+
+# get the rest of the data for these tmks
+
+tmk_converted_allinfo <- oahu_dwells_cleanedup %>% 
+  mutate(taxid_root = substr(taxid,1,8)) %>% 
+  filter(taxid_root %in% tmk_converted$taxid_root)
+  
+
+# ----------------- Tables and Lists to Export ------------------- #
+
+st_write(ownership_by_year,
+         file.path(driver_dir,"4_OSDS_N_Runoff/output-data/qaqc/ownership_peryear.csv"))
+
+st_write(bedsbath_per_year,
+         file.path(driver_dir,"4_OSDS_N_Runoff/output-data/qaqc/bedsbath_peryear.csv"))
+
+st_write(tmk_with_card_change,
+         file.path(driver_dir,"4_OSDS_N_Runoff/output-data/qaqc/tmkswithcardchange_peryear.csv"))
+
+st_write(tmk_converted_allinfo,
+         file.path(driver_dir,"4_OSDS_N_Runoff/output-data/qaqc/tmks_withhprchange_allinfo.csv"))
+```
+
+Recap:
+- There are two ways a tax id might be duplicated in this data set
+- 1. it was assessed multiple years (this will be true for most)
+- 2. it has multiple cards, meaning multiple structures. 
+
+### Step 2: Bring in IWS Permit data 
+
+- This is the "heart" of the database
+- Execute Join
+- Develop QA QC report 2 on which drop out. Note this is only for oahu
+
+```{r}
+
+# read in permit data - this includes all islands
+
+iws_permit_data <- read_csv(file.path(data_dir, "osds/shared-data/2009_Present_IWSList_Permits.csv"))
+  
+  
+# first, filter permit data for unique tmks in our dwelling data and count. 
+
+oahu_dwells_cleanedup <- oahu_dwells_cleanedup %>% 
+  mutate(full_taxid = substr(paste0(jurisid,taxid),1,9))
+
+length(unique(oahu_dwells_cleanedup$full_taxid)) #how many? 14,8527
+
+iws_oahu_permits <- iws_permit_data %>% 
+  filter(TMK %in% oahu_dwells_cleanedup$full_taxid) #1355
+
+# check another way: how many in just oahu using filter?
+
+iws_oahu_permits_anotherway <- iws_permit_data %>% 
+  mutate(tmk_char = as.character(TMK)) %>% 
+  filter(str_starts(tmk_char,"1")) %>% 
+  rename(full_taxid = tmk_char) #1741 
+
+iws_oahu_permits_all <- iws_oahu_permits_anotherway %>% 
+  mutate(approval_date = mdy(FinalApprovalDate),
+         year = year(approval_date)) #1741
+
+# ok so we have about ~400 permits that are not in our dwell data. lets check it out by actually joining the dwell data to the permit data
+
+# collapse years - we'll come back to that. we jsut want to know which dwellings are represented in the permit database
+# 
+oahu_dwells_norepeats <- oahu_dwells_cleanedup %>% 
+  select(-tax_year, -condo_dwell, -card,-card_char) %>% 
+  distinct() # so now, all thats left are duplicate tmks that have multiple buildings on it or buldings that changed. 
+
+iws_oahu_dwell_join <- inner_join(iws_oahu_permits_all, oahu_dwells_norepeats, by = "full_taxid")
+
+# so from here we can do a lot of stuff, like see which ones have multiple permits and multiple buildings, which one have one permit but multiple buildings, which only have one permit and one building, etc. we dropped the tax year and card but we can tell if there are multiple cards here based on repeats. save for now and come back to that. 
+
+st_write(iws_oahu_dwell_join,
+         file.path(driver_dir,"4_OSDS_N_Runoff/output-data/iws_oahu_permits_wmatchingdwells.csv"))
+
+# for now, export list of dwells with no permits and vice versa:
+
+tmks_of_dwells_no_permits <- setdiff(oahu_dwells_norepeats$full_taxid, iws_oahu_dwell_join$full_taxid)
+
+dwell_nopermits <- oahu_dwells_cleanedup %>% 
+  filter(full_taxid %in% tmks_of_dwells_no_permits)
+
+dwell_with_permits <- oahu_dwells_cleanedup %>% 
+  filter(full_taxid %in% iws_oahu_dwell_join$full_taxid) 
+
+# did joey get permit data from before? we'll have to use the old osds data layer to get at what was a cesspool prior to 2009
+st_write(dwell_with_permits,
+         file.path(driver_dir,"4_OSDS_N_Runoff/output-data/dwelling_info_withIWSpermit.csv"))
+
+# export list of permits with no dwellings, which are likey parks and businesses spot checked a few. 
+
+permits_no_dwellings <- setdiff(iws_oahu_permits_all$full_taxid,iws_oahu_dwell_join$full_taxid)
+
+iws_oahu_permits_nodwell <- iws_oahu_permits_all %>% 
+  filter(full_taxid %in% permits_no_dwellings)
+
+st_write(iws_oahu_permits_nodwell,
+         file.path(driver_dir,"4_OSDS_N_Runoff/output-data/qaqc/iws_oahu_permits_nodwellings.csv"))
+
+```
+
+Results so far: 
+- there are 1741 permits issued for oahu
+- this represents only a very small fraction of dwellings on oahu
+- 386 issued since 2009 are likely non-residences
+- bedrooms and bathrooms have steadily increased in oahu
+- condos have been increasing at a faster rate then single family housing
+
+
+From here, we really only need to work with the dwelling data that has permits attached. We also need to pull in old data to assess which were cesspools before they switched. 
+
+1. First assess all the permit - which have duplicate permits for different years?
+
+```{r}
+
+# create column if the tmk is duplicated
+iws_oahu_permits_all$is_duplicate <- duplicated(iws_oahu_permits_all$TMK) | duplicated(iws_oahu_permits_all$TMK, fromLast = TRUE) # total = 1741
+
+iws_oahu_permits_dups <- filter(iws_oahu_permits_all, is_duplicate == TRUE) # 457
+
+# create column to identify if the duplicate has different years (ie new permit over time) or the same year (multiple permits per tax id)
+
+iws_oahu_permits_all <- iws_oahu_permits_all %>% 
+  group_by(full_taxid) %>% 
+  mutate(
+    n_rows = n(),
+    n_years = n_distinct(year)
+  ) %>%
+  ungroup() %>%
+  mutate(
+    osds_flag = case_when(
+      n_rows > 1 & n_years > 1  ~ "possible update or later addition",
+      n_rows > 1 & n_years == 1 ~ "possible multiple osds permits",
+      TRUE                      ~ NA_character_
+    )
+  ) %>%
+  rownames_to_column("permit_id")
+  
+
+iws_duplicate_scenario_counts <- iws_oahu_permits_all %>% 
+  group_by(osds_flag, year) %>% 
+  summarize(
+    total_tmks = length(unique(full_taxid))
+  )
+
+# write these out for report
+
+```
+
+Results so far: 
+- there have been 1741 permits granted in Oahu since 2009 
+- 386 of them are for non-dwellings - this is important!
+- 476 permits are at duplicate tmks. This suggests either: the permit changed over time (in which case year issued will be different) or there were multiple OSDS per  
+- on closer inspection of these duplicates: 
+  - 77 indicate multiple permits for the same TMK in the same year
+  - 51 indicate multiple permits for the same TMK over various years
+  - 1284 are one permit, for one year, for one TMK
+  
+  
+Things to visualize: 
+- timing for permit applications, by type
+- timing for upgrades
+
+Question for Joey: 
+- when did you source the permit data? can we safely assume from your work that whatever a house was in your dataset represents its osds situation in 2010? and build from there?
+
+### Step 3: Assign Class to Permit Dataset
+
+The assignment of class is based on a previously determined scheme by Whittier and El Kadi (2014). The scheme is as follows:
+
+Class I = any system receiving soil treatment, with disposal types as bed, trench, and infiltration chambers
+Class II = Septic system discharging into seepage pit
+Class III = Effluent received primary treatment only 
+Class IV = Aerobic units discharging into a seepage pit. The effluent receives primary and secondary treatment. 
+
+Class V = multiple with at least one cesspool. So note this will only apply to those that weʻve flagged above (77)
+
+For cases not described perfectly in the 2014 report, refer to Juliaʻs schema: https://docs.google.com/spreadsheets/d/1yZ9sg4r0Eeiu_226cuKiJrFfh1mbDI5H/edit?gid=891519330#gid=891519330
+
+Weʻll just do that to the Oahu permit data below. Once we have the class, weʻll add a column specifying if the tmk is a dwelling or not.
+
+```{r}
+
+# first, just assign to the tmks that have one permit for one year. Used Juliaʻs google doc here. 
+
+
+library(janitor)
+
+# disposal types by treatment
+
+minimal_treatment <- c("Seepage Pit")
+
+primary_treatment <- c("Bed",
+                       "Trench",
+                       "Infiltrators / Chambers",
+                       "ET Bed-Irrigation System",
+                       "Presby")
+
+unknown_treatment <- c("Other","Unknown")
+
+combo_treatment <- c("Combination of two types")
+
+# apply to our data - first, just do ones with only one recorded permit. none of these should be 5.
+
+iws_oahu_permits_withclass <- iws_oahu_permits_all %>%
+  clean_names() %>% 
+  #filter(is.na(osds_flag)) %>% 
+  mutate(osds_class = case_when(
+    permit_type == "Septic Tank" & disposal_type %in% primary_treatment ~"1",
+    permit_type == "Septic Tank" & disposal_type %in% minimal_treatment ~"2",
+    permit_type == "Septic Tank" & disposal_type %in% unknown_treatment ~ "2", 
+    permit_type == "Septic Tank" & disposal_type %in% combo_treatment ~ "1", 
+    permit_type %in% c("Compost Toilet","Gray Water System","Compost Toilet/Gray Water System") & disposal_type %in% c("Other","Unknown")  ~ "3",
+    permit_type == "Compost Toilet" & disposal_type == "Bed" ~ "1",
+    permit_type == "Gray Water System" & disposal_type %in% c("Bed","Trench") ~ "3",
+    permit_type == "Aerobic Unit" & disposal_type %in% minimal_treatment ~ "4",
+    permit_type == "Aerobic Unit" & disposal_type %in% primary_treatment ~ "1",
+    permit_type == "Aerobic Unit" & disposal_type %in% unknown_treatment ~ "3",
+    permit_type == "Aerobic Unit" & disposal_type %in% combo_treatment ~ "1",
+    permit_type == "Presby (passive, NSF 40)" ~ "1",
+    permit_type == "Holding Tank (Government Only)" ~ "1",
+    permit_type == "Incinerating Toilet" ~ "1",
+    TRUE ~ "Can't assign MB"
+  ))
+
+
+iws_nochanges <- iws_oahu_permits_withclass %>% 
+  filter(is.na(osds_flag))
+
+
+iws_oahu_possible_updates <- iws_oahu_permits_withclass %>% 
+  filter(osds_flag == "possible update or later addition")
+  
+iws_oahu_multiple_odsd_pertmk <- iws_oahu_permits_withclass %>% 
+  filter(osds_flag == "possible multiple osds permits")
+
+```
+
+Going through this made me realize it would be helpful to create a column for each TMK that has the unique addresses on it, which we can think of as number of buildings per TMK. Therefore, when we get a case where we have multiple osds for one TMK, we can handle it more precisely than simply assigning them Class V. I'm thinking something like:
+- assign each OSDS to one building
+- if can, assign bedrooms to each building
+- if we can't tell the buildings apart (ie the tmk dwell did not have a card number), divide the total number of bedrooms within each building. 
+- use card number as the building number in the dwell dataset
+
+
+```{r}
+
+# summarize unique addresses (which we will proxy as # of buildings) per TMK. 
+
+address_per_tmk <- iws_oahu_permits_all %>%
+  group_by(TMK) %>% 
+  mutate(address_full = ifelse(is.na(ProjectStreetAddress2),ProjectStreetAddress,paste(ProjectStreetAddress,"-",ProjectStreetAddress2))) %>% 
+  summarize(
+    n_addresses = length(unique(address_full)), # how many buildings on this TMK
+    n_permits = length(permit_id), # how many permits have they applied for in this time period
+    min_year = min(year),
+    last_year = max(year) # when these permits were issued
+  ) # write this one out
+
+# how many have more than one building?
+
+nrow(address_per_tmk[address_per_tmk$n_addresses > 1, ]) #84
+
+# how many have multiple years of applications?
+
+address_per_tmk <- address_per_tmk %>% 
+  mutate(building_permit_scenario = case_when(
+    n_addresses == 1 & n_permits == 1  ~ "One building, one permit",
+    n_addresses == 1 & n_permits > 1 ~ "One buidling, multiple permits",
+    n_addresses > 1 & n_permits == 1 ~ "Multiple buildings, one permit",
+    n_addresses > 1 & n_permits > 1 ~ "Multiple buildings, Mulitple permits"
+  ),
+  year_scenario = case_when(
+    last_year == min_year ~ "All the same year",
+    TRUE ~ "Mulitple Years"
+  ))
+
+scenario_summary <- address_per_tmk %>% 
+  group_by(building_permit_scenario,year_scenario) %>% 
+  summarize(
+    tmk_per_scenario = n()
+  )
+  
+write_csv(address_per_tmk,
+         file.path(driver_dir,"4_OSDS_N_Runoff/output-data/qaqc/permits_and_buildings_pertmk.csv"),
+         append = FALSE)
+
+
+write_csv(scenario_summary,
+         file.path(driver_dir,"4_OSDS_N_Runoff/output-data/qaqc/oahu_building_scenario.csv"),
+         append = FALSE)
+
+```
+
+Results from this tell us that:
+- 84 out of 1412 tmks that applied for permits in this time period have multiple buildings. 
+- 1284 tmks are a one building, one permit scenario. Easy!
+- 6 are one building, multiple permits, multiple years. This suggests a replacement or upgrade. Also easy but very small!
+- 38 are one building, multiple permits, all one year. 
+- 39 are multiple permits for multiple buildings. Easy if 1) all permits the same class and 2) building # = permit number.
+- 45 are multiple buildings, multiple permits, and multiple years. 
+
+KEY ASSUMPTION: if a row in this permit dataset is exactly duplicated, we will assume two permits for the same TMK / Building / Year. These could also be errors. For now Im going to "trust" IWs but when we are finished we can run a scenario assuming the opposite (that they are all duplicates) and see how much that impacts the results. 
+
+Ok, so the "easy" one building ones we can filter out, clean up a bit and save as ready for comparison to past datasets. Luckily this represents the vast majority of permits. Yay!
+
+For the other scenarios we'll have to make more assumptions. First, we can compare this list with dwellings, and see if the tmks with multiple buildings have multiple cards. ideally they are the same #! If they don't match, we'll have to aggregate total bedrooms per dwell. 
+
+```{r}
+
+# clean up, identify as dwell or non-dwell and save "easy" permit situations
+
+easys <- address_per_tmk %>% 
+  filter(building_permit_scenario == "One building, one permit")
+
+iws_oahu_permits_easyscenario <- iws_oahu_permits_withclass %>% 
+  filter(tmk %in% easys$TMK) %>% 
+  mutate(dwell_flag = ifelse(full_taxid %in% dwell_with_permits$full_taxid,"Dwelling","Other")) %>% 
+  select(-n_rows,-n_years, -osds_flag)
+
+write_csv(iws_oahu_permits_easyscenario,
+         file.path(driver_dir,"4_OSDS_N_Runoff/output-data/iws_oahu_permits_easyscenario.csv"),
+         append = FALSE)
+
+
+# medium scenario is one building, multiple permits. assumption here is that these are multiple osds per building IF the year is the same. if not, its an upgrade. 
+
+tricky_tmks <- address_per_tmk %>% 
+  filter(building_permit_scenario %in% c("One buidling, multiple permits"))
+
+iws_oahu_permits_mediumscenario <- iws_oahu_permits_withclass %>% 
+  filter(tmk %in% tricky_tmks$TMK) %>% 
+  mutate(dwell_flag = ifelse(full_taxid %in% dwell_with_permits$full_taxid,"Dwelling","Other")) %>% 
+  select(-n_rows,-n_years, -osds_flag)
+
+
+# how many of these tmks are also in our dwell dataset? how many have multiple cards? 
+
+hard_tmks <- address_per_tmk %>% 
+  filter(building_permit_scenario %in% c("Multiple buildings, Mulitple permits"))
+
+
+iws_oahu_permits_hardscenario <- iws_oahu_permits_withclass %>% 
+  filter(tmk %in% hard_tmks$TMK) %>% 
+  mutate(dwell_flag = ifelse(full_taxid %in% dwell_with_permits$full_taxid,"Dwelling","Other")) %>% 
+  select(-n_rows,-n_years, -osds_flag)
+
+
+
+
+```
+
+
+
+## Compare to Past Datasets
+
+We have to bring in the past OSDS dataset to have a record of what each tmk was bedroom wise and class wise prior to 2009 (which is when our permit data starts). Without it, we can only track changes and upgrades within the 2009 - 2020. Weʻll add this as a column. Once we do this, we can generate cesspool upgrade list. 
+
+There are three main categories of comparison from Step 2;
+- Easy situations where we have one building, one permit per tmk
+- More complex ones
+
+
+
+
