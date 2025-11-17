@@ -310,6 +310,7 @@ From here, we really only need to work with the dwelling data that has permits a
 
 1. First assess all the permit - which have duplicate permits for different years?
 
+Maddie note: rerun this so that you are not looking at the non dwell onts, or at least fitlering them out because i think alot of the duplicates are on non dwell dudes.
 ```{r}
 
 # create column if the tmk is duplicated
@@ -317,7 +318,7 @@ iws_oahu_permits_all$is_duplicate <- duplicated(iws_oahu_permits_all$TMK) | dupl
 
 iws_oahu_permits_dups <- filter(iws_oahu_permits_all, is_duplicate == TRUE) # 457
 
-# create column to identify if the duplicate has different years (ie new permit over time) or the same year (multiple permits per tax id)
+# create column to identify if a duplicate TMK has different years (ie new permit over time) or the same year (multiple permits per tax id)
 
 iws_oahu_permits_all <- iws_oahu_permits_all %>% 
   group_by(full_taxid) %>% 
@@ -441,7 +442,7 @@ Going through this made me realize it would be helpful to create a column for ea
 - if we can't tell the buildings apart (ie the tmk dwell did not have a card number), divide the total number of bedrooms within each building. 
 - use card number as the building number in the dwell dataset
 
-
+### Step 4: Count addresses and permits by TMK & find min and max years
 ```{r}
 
 # summarize unique addresses (which we will proxy as # of buildings) per TMK. 
@@ -491,21 +492,23 @@ write_csv(scenario_summary,
 
 ```
 
-Results from this tell us that:
+**Results** from this tell us that:
 - 84 out of 1412 tmks that applied for permits in this time period have multiple buildings. 
 - 1284 tmks are a one building, one permit scenario. Easy!
 - 6 are one building, multiple permits, multiple years. This suggests a replacement or upgrade. Also easy but very small!
 - 38 are one building, multiple permits, all one year. 
-- 39 are multiple permits for multiple buildings. Easy if 1) all permits the same class and 2) building # = permit number.
+- 39 are multiple permits for multiple buildings. Easy if 1) all permits the same class and 2) building # = permit number. 
 - 45 are multiple buildings, multiple permits, and multiple years. 
 
 KEY ASSUMPTION: if a row in this permit dataset is exactly duplicated, we will assume two permits for the same TMK / Building / Year. These could also be errors. For now Im going to "trust" IWs but when we are finished we can run a scenario assuming the opposite (that they are all duplicates) and see how much that impacts the results. 
 
 Ok, so the "easy" one building ones we can filter out, clean up a bit and save as ready for comparison to past datasets. Luckily this represents the vast majority of permits. Yay!
 
-For the other scenarios we'll have to make more assumptions. First, we can compare this list with dwellings, and see if the tmks with multiple buildings have multiple cards. ideally they are the same #! If they don't match, we'll have to aggregate total bedrooms per dwell. 
+For the other scenarios we'll have to make MORE ASSUMPTIONS. First, we can compare this list with dwellings, and see if the tmks with multiple buildings have multiple cards. ideally they are the same #! If they don't match, we'll have to aggregate total bedrooms per dwell. 
 
 ```{r}
+
+# if starting here read in addresses per tmk
 
 # clean up, identify as dwell or non-dwell and save "easy" permit situations
 
@@ -549,9 +552,32 @@ iws_oahu_permits_hardscenario <- iws_oahu_permits_withclass %>%
 
 ```
 
+For TMKs with more than one address, how many have multiple cards?
+
+```{r}
+
+dwell_hardtmks <- iws_oahu_dwell_join %>% 
+  filter(full_taxid %in% hard_tmks$TMK)
+
+length(unique(dwell_hardtmks$full_taxid)) #60
+
+length(unique(hard_tmks$TMK)) #84. so 24 of the hard tmks aren't dwellings. thats cool
+
+# this is honestly not so bad. I feel like we can go through each of these by hand if need. next steps = send list to Julia
 
 
-## Compare to Past Datasets
+
+
+```
+
+
+## Lists to send:
+- List of TMKS Oahu with multiple structures and multiple permits for one year to Julia
+- List of non-dwellings to Julia
+- All tmks in new permit data to Aimee and the last permit date, so she can cross check if 1) the TMKs have been recorded as on sewer since
+
+
+## Compare to Past Datasets to Complete the Time Series 
 
 We have to bring in the past OSDS dataset to have a record of what each tmk was bedroom wise and class wise prior to 2009 (which is when our permit data starts). Without it, we can only track changes and upgrades within the 2009 - 2020. Weʻll add this as a column. Once we do this, we can generate cesspool upgrade list. 
 
@@ -559,6 +585,217 @@ There are three main categories of comparison from Step 2;
 - Easy situations where we have one building, one permit per tmk
 - More complex ones
 
+### A) Compare to OTP (2010 timestamp)
 
+Let's start with the easy list. We'll read in the old OSDS dataset and assume that what ever is recorded for that tmk in there is what it was before 2010. If our new dataset has something different, we know its changed. 
+
+Important Assumption from Julia's work: if a location goes from septic, or better, to CESSPOOL is probably wrong? 
+
+```{r}
+
+# read in otp data and look carefully at duplicates. 
+
+otp_osds <- st_read(file.path(data_dir,"osds/shared-data/OTP/MHI_OSDS_merge.shp"))
+
+otp_osds_df <- as.data.frame(otp_osds)
+
+otp_oahu_only <- otp_osds %>% filter(ISLAND == "Oahu")
+
+# ew these don't have tmk or bedroom. intersect with TMK to get "rough" tmk.
+
+tmk_parcels_oahu <- st_read(file.path(data_dir,"osds/raw-data-downloaded/tmk_state_parcels_shp/tmk_state.shp"),
+                       options = "OGR_GEOM_POSSIBLE_ERRORS=YES") %>% 
+  filter(county == "Honolulu") %>% 
+  mutate(valid = st_is_valid(.))
+
+tmk_bad <- tmk_parcels_oahu %>% filter(valid != TRUE) # only 29 cool
+
+tmk_good <- tmk_parcels_oahu %>% filter(valid == TRUE)
+
+
+tmk_parcels_cl <- tmk_good %>% 
+  select(TMK,TMK_txt) %>% 
+  st_transform(., crs = crs(otp_osds))
+
+otp_with_tmk <- st_join(otp_oahu_only, tmk_parcels_cl, by = st_within)
+
+# did we lose some?
+
+otp_no_tmk <- otp_with_tmk %>% filter(is.na(TMK)) # 176, not to bad
+
+otp_with_tmk <- otp_with_tmk %>% filter(!is.na(TMK))
+
+```
+
+Better version from Bob:
+
+```{r}
+library(janitor)
+
+# note these are all oahu
+otp_bob <- st_read(file.path(data_dir,"osds/raw-data-downloaded/otp_osds_database/osds_oah_shp.shp/osds_oah.shp")) %>% 
+  clean_names()
+
+
+otp_bob_cols <- otp_bob %>% 
+  select(starts_with("tmk"),"type","osds_class","ttl_osds","rsk_score")
+
+onebuilding_onepermit <- read.csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/iws_oahu_permits_easyscenario.csv")) #1384
+
+# there appear to be some duplicates?
+
+onebuilding_onepermit_distinct <- onebuilding_onepermit %>% 
+  select(-permit_id) %>% 
+  distinct() # 40 are duplicates
+
+# question 1: do all of these exist in bobs data? if not, then new osds builds
+
+otp_bob_filtered_byOBOP <- otp_bob_cols %>% 
+  mutate(tmk_9 = as.integer(tmk_9)) %>% 
+  filter(tmk_9 %in% onebuilding_onepermit$tmk) %>% #1093, so missing a few others
+  mutate(year_issued = 2009) %>% 
+  rowid_to_column("permit_id") %>% 
+  mutate(change_flag = "new permit detected since otp")
+
+otp_bob_tmk_notinOBOP <- otp_bob_cols %>% 
+  mutate(tmk_9 = as.integer(tmk_9)) %>% 
+  filter(tmk_9 %!in% onebuilding_onepermit$tmk) %>% # 12591
+  mutate(year_issued = 2009) %>% 
+  mutate(change_flag = "no new permit application since otp")
+
+write_csv(otp_bob_tmk_notinOBOP,
+          file.path(driver_dir,"4_OSDS_N_Runoff/output-data/otp_osds_wo_permitupgrade.csv"))
+
+# also create a list of new permits
+
+onebuilding_onepermit_NEW_since2009 <- onebuilding_onepermit %>% 
+  filter(tmk %!in% otp_bob_filtered_byOBOP$tmk_9) # 255. (36 still missing?)
+
+onebuilding_onepermit_NEW_since2009_distinct <- onebuilding_onepermit_NEW_since2009 %>% 
+  select(-permit_id) %>% 
+  distinct()
+
+# use set diff 
+
+tmks_not_inbob <- setdiff(onebuilding_onepermit$tmk, otp_bob_filtered_byOBOP$tmk_9) #236
+
+onebuilding_onepermit_NEW_since2009_other <- onebuilding_onepermit %>% 
+  filter(tmk %in% tmks_not_inbob) %>% 
+  mutate(change_flag = "new since otp") #still 255
+
+# using just the data represented in both, pivot wider with class and number per year column. fix class so its more comparable to other data
+
+otp_bob_filtered_byOBOP_wide <- otp_bob_filtered_byOBOP %>% 
+  select(permit_id,tmk_9,type,osds_class,ttl_osds,year_issued) %>% 
+  st_drop_geometry() %>% 
+  pivot_wider(id_cols = c("permit_id","tmk_9"), names_from = year_issued, values_from = c("type","osds_class","ttl_osds")) %>% 
+  rename(osds_class_otp = osds_class_2009, ttl_osds_otp = ttl_osds_2009, tmk = tmk_9) %>% 
+  mutate(osds_class_otp = case_when(
+    osds_class_otp == "Class IV" ~ 4,
+    osds_class_otp == "Class III" ~ 3,
+    osds_class_otp == "Class II" ~ 2,
+    osds_class_otp == "Class I" ~ 1,
+    osds_class_otp == "Multiple" ~ 5
+  ))
+
+# quickly so we know how to join - are there duplicate tmks here?
+
+dups_otp_fiteredOBOP <- otp_bob_filtered_byOBOP_wide %>% mutate(duplicated = duplicated(tmk_9))
+  
+# pivot our easy new data in the same way
+
+onebuild_onepermit_inbob <- onebuilding_onepermit%>% 
+  filter(tmk %in% otp_bob_filtered_byOBOP$tmk_9)
+
+onebuild_onepermit_inbob_wide <- onebuild_onepermit_inbob %>% 
+  pivot_wider(id_cols = c("permit_id","tmk"), names_from = year, values_from = c("permit_type","osds_class"))
+
+dups_obop_inbob <- onebuild_onepermit_inbob_wide %>% mutate(duplicated = duplicated(tmk))
+
+# join otp bob to the new ones. create flags for changes. write out results. 
+
+all_osds_present_inboth <- left_join(dups_obop_inbob, otp_bob_filtered_byOBOP_wide, by = c("tmk"))
+
+write_csv(all_osds_present_inboth,
+          file.path(driver_dir,"4_OSDS_N_Runoff/output-data/iws_oahu_permits_easyscenario_withOTPpastinfo_wide.csv"))
+
+# THIS IS AN IMPORTANT PLACE TO INCORPORATE AIMEES DATA. TMKS in bobs table may not be in our new permit data because they were upgraded to sewer line or other. cannot assume they are unchanged. 
+
+# figure out how many cesspool upgrades we can detect here
+
+all_osds_present_inboth_nodups <- all_osds_present_inboth %>% 
+  filter(duplicated == FALSE)
+
+all_permit_present_inboth_long <- all_osds_present_inboth_nodups %>% 
+  rename(type_otp = type_2009, class_otp = osds_class_otp) %>% 
+  select(-starts_with("permit_type")) %>% 
+  pivot_longer(cols = starts_with("osds"),
+               names_to = "year",
+               values_to = "class",
+               values_drop_na = TRUE) %>% 
+  mutate(
+    year = as.integer(str_remove(year, "osds_class_"))  # extract numeric year
+  )
+# now get the most recent update per row
+
+last_permit_persentinboth <- all_permit_present_inboth_long %>% 
+  group_by(tmk) %>% 
+  slice_max(year, n = 1, with_ties = FALSE) %>% 
+  rename(class_last = class,
+         class_last_year = year) %>% 
+  mutate(upgrade_yn = case_when(
+    class_last < class_otp ~ "upgrade occured",
+    class_last == class_otp ~ "addition or data overlap in otp and 2009",
+    class_last > class_otp ~ "check class assignment",
+  )) %>% 
+  mutate(cesspool_upgrade = case_when(
+    class_otp == 4 & class_last < 4 ~ "cesspool upgraded",
+    class_otp == 4 & class_last == 4 & class_last_year != "2009" ~ "new cesspool permit",
+    class_otp == 4 & class_last == 4 & class_last_year == 2009 ~ "duplicate not upgraded",
+    class_otp!= 4 ~ "na"
+  ))
+
+
+write_csv(last_permit_persentinboth,
+          file.path(driver_dir,"4_OSDS_N_Runoff/output-data/all_possible_OSDSupgrades_withflag.csv"))
+
+
+```
+
+OK so some issues MUST DISCUSS:
+- did we change how we define classes? because I am seeing some examples where the osds class in the otp dataset is better than osds class using our new schema. We will ahve to go back and reclassify these ones if there is a difference. 
+- how do we want to treat 2009? is it a duplicate of what is in bobs dataset? if they are different, which one wins?
+
+Finally, summarize by upgrades and cesspool upgrades!!
+
+```{r}
+
+upgrade_tally <- last_permit_persentinboth %>% 
+  group_by(upgrade_yn) %>% 
+  summarize(
+    total_n = n()
+  )
+
+cesspool_upgrade_tally <-  last_permit_persentinboth %>% 
+  group_by(cesspool_upgrade) %>% 
+  summarize(
+    total_n = n()
+  )
+
+```
+
+RESULTS:
+
+Without counting our more difficult scenarios, we have recorded 813 upgrades!
+
+Of those 813, 754 were cesspool upgrades!
+- we also have 24 possible new cesspool permits??
+- and 332 upgrades from a non-cesspool odsds
+- and 1 that might just be a duplicate
+
+
+### B) Compare to WH (2017 timestamp), Hawaii only
+
+Not possible until we have the updated HI data. 
 
 
