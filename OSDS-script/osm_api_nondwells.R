@@ -132,8 +132,6 @@ get_reverse_osm <- function(lat, lon) {
 
 # ------------------- Try using Google Places -------------------------------- # 
 
-google_key <- "AIzaSyC0bWnCXknnXgz-HtroSVdEs1xhp88GROg"
-
 get_place_type_google <- function(address){
   url <- "https://maps.googleapis.com/maps/api/place/findplacefromtext/json"
   
