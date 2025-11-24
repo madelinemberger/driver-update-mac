@@ -282,7 +282,7 @@ dwell_nopermits <- oahu_dwells_cleanedup %>%
 dwell_with_permits <- oahu_dwells_cleanedup %>% 
   filter(full_taxid %in% iws_oahu_dwell_join$full_taxid) 
 
-# did joey get permit data from before? we'll have to use the old osds data layer to get at what was a cesspool prior to 2009
+# joey got permit data from before. we'll have to use the old osds data layer to get at what was a cesspool prior to 2009
 st_write(dwell_with_permits,
          file.path(driver_dir,"4_OSDS_N_Runoff/output-data/dwelling_info_withIWSpermit.csv"))
 
@@ -295,6 +295,18 @@ iws_oahu_permits_nodwell <- iws_oahu_permits_all %>%
 
 st_write(iws_oahu_permits_nodwell,
          file.path(driver_dir,"4_OSDS_N_Runoff/output-data/qaqc/iws_oahu_permits_nodwellings.csv"))
+
+# clean it up - add id
+
+permits_no_dwellings <- st_read(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/qaqc/iws_oahu_permits_nodwellings.csv"))
+
+permits_no_dwellings_cl <- permits_no_dwellings %>% 
+  rowid_to_column("permit_num") %>% 
+  select(-approval_date)
+
+
+st_write(permits_no_dwellings_cl,
+         file.path(driver_dir,"4_OSDS_N_Runoff/output-data/qaqc/iws_oahu_permits_nodwellings_cl.csv"))
 
 ```
 
@@ -601,7 +613,7 @@ otp_osds_df <- as.data.frame(otp_osds)
 
 otp_oahu_only <- otp_osds %>% filter(ISLAND == "Oahu")
 
-# ew these don't have tmk or bedroom. intersect with TMK to get "rough" tmk.
+# these don't have tmk or bedroom. intersect with TMK to get "rough" tmk.
 
 tmk_parcels_oahu <- st_read(file.path(data_dir,"osds/raw-data-downloaded/tmk_state_parcels_shp/tmk_state.shp"),
                        options = "OGR_GEOM_POSSIBLE_ERRORS=YES") %>% 
@@ -646,7 +658,7 @@ onebuilding_onepermit <- read.csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-d
 
 onebuilding_onepermit_distinct <- onebuilding_onepermit %>% 
   select(-permit_id) %>% 
-  distinct() # 40 are duplicates
+  distinct() # 40 are duplicates. 
 
 # question 1: do all of these exist in bobs data? if not, then new osds builds
 
@@ -673,7 +685,7 @@ onebuilding_onepermit_NEW_since2009 <- onebuilding_onepermit %>%
 
 onebuilding_onepermit_NEW_since2009_distinct <- onebuilding_onepermit_NEW_since2009 %>% 
   select(-permit_id) %>% 
-  distinct()
+  distinct() # 10ish are duplicates
 
 # use set diff 
 
