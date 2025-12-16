@@ -669,6 +669,8 @@ otp_bob_filtered_byOBOP <- otp_bob_cols %>%
   rowid_to_column("permit_id") %>% 
   mutate(change_flag = "new permit detected since otp")
 
+
+
 otp_bob_tmk_notinOBOP <- otp_bob_cols %>% 
   mutate(tmk_9 = as.integer(tmk_9)) %>% 
   filter(tmk_9 %!in% onebuilding_onepermit$tmk) %>% # 12591
@@ -694,6 +696,9 @@ tmks_not_inbob <- setdiff(onebuilding_onepermit$tmk, otp_bob_filtered_byOBOP$tmk
 onebuilding_onepermit_NEW_since2009_other <- onebuilding_onepermit %>% 
   filter(tmk %in% tmks_not_inbob) %>% 
   mutate(change_flag = "new since otp") #still 255
+
+write_csv(onebuilding_onepermit_NEW_since2009_other,
+          file.path(driver_dir,"4_OSDS_N_Runoff/output-data/osds_new_since_otp.csv"))
 
 # using just the data represented in both, pivot wider with class and number per year column. fix class so its more comparable to other data
 

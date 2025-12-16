@@ -3,7 +3,6 @@
 
 ### Hawaii
 
-```{r}
 
 # hawaii - only one with just one file
 int_gdb_path <- here("data/osds/shared-data/Intermediate_Products.gdb")
