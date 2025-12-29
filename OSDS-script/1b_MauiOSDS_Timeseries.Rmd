@@ -1,0 +1,719 @@
+---
+title: "Maui OSDS Timeseries"
+author: "Madeline Berger"
+date: "2025-12-16"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+
+library(here)
+
+source(here("workflow/setup.R"))
+
+
+```
+
+
+## New Data: clean up and join 
+
+### Step 1: Clean Up Dwell Data
+
+The Maui data comes to us pre-parsed, which is great. Here we will just generate the same summary tables as we did for Oahu. We will have to read in each excel file here and do some cleaning. 
+
+This report should tell us:
+
+- total number of TMKS assessed each year for Oahu
+- how many TMKS are single owner versus multiple owner per year of data
+- how many TMKS have more than one card (i.e. more than one building assessed on the parcel) per year
+- Summary of bedrooms and bathrooms per year?
+
+Maui specific note: Iʻm not sure the condo type and stype codes are the same as for Oahu. But if they are, the following is what condo style means:
+
+ 1 = SINGLE FAMILY
+ 2 = DUPLEX
+ 3 = TOWNHOUSE
+ 4 = LOWRISE
+ 5 = HIGHRISE
+
+Resources: 
+
+https://thepapakeacollection.com/2023/03/18/understanding-the-tax-map-key-system-in-hawaii-a-comprehensive-guide/
+
+```{r}
+
+library(readxl)
+
+# list files in the dropbox folder
+
+maui_dwell_fp <- list.files(path = file.path(driver_dir,"4_OSDS_N_Runoff/input-data/Dwelling_Data_Raw/Maui_DwellRaw_12112025"),
+                            full.names =  T,
+                            pattern = ".XLSX")
+
+
+file_types <- sapply(maui_dwell_fp, excel_format)
+check <- data.frame(
+  file = basename(maui_dwell_fp),
+  format = file_types
+)
+
+
+maui_dwell_dfs <- lapply(maui_dwell_fp, read_excel,
+                         skip =1,
+                         col_names = TRUE)
+
+df2009 <- maui_dwell_dfs[[1]]
+
+file.info(maui_dwell_fp)$size
+
+# these are all enormous.
+
+
+# write a function that creates summary tables for each year and then joins them all before saving. What we summarized for Oahu:
+
+#1. TMKS with multiple cards per year
+#2. Total TMKS per year
+#3. Total Bedrooms and bathrooms per year
+#4. Single Level Ownership versus Multilevel ownership - and which converted
+
+
+create_summary_report = function(df){
+  
+  ### for testing ###
+  
+  #df <- maui_dwell_dfs[[1]]
+  
+  ######################
+  
+  dwells_clean_names <- janitor::clean_names(df) %>% mutate(card_char = as.character(card))
+  
+  #1 tmks per year, how many have > 1 card
+  tmk_multi_by_year <- dwells_clean_names %>%
+    group_by(tax_year, parid) %>%
+    summarize(n_cards = n_distinct(card_char), .groups = "drop") %>%
+    group_by(tax_year) %>%
+    summarize(
+      total_TMKs = n(), # total tmks
+      TMKs_with_multiple_cards = sum(n_cards > 1), # how many with multiple cards
+      pct_multi = 100 * TMKs_with_multiple_cards / total_TMKs) # percent with more than 1 card
+
+  #2 beds and baths per year
+  bedsbath_per_year <- dwells_clean_names %>% 
+  mutate(bedrooms = as.numeric(bed_rooms),
+         full_baths = as.numeric(full_baths)) %>% 
+  group_by(tax_year) %>% 
+  summarize(
+    n_beds = sum(bed_rooms, na.rm = TRUE),
+    n_baths = sum(full_baths, na.rm = TRUE)
+  )
+  
+  #3  percent condo in each year. also number of single family converted to condo
+  
+  condo_summary <- dwells_clean_names %>% 
+    mutate(condo_type_char = str_to_lower(
+      case_when(
+      condo_type == 1 ~ "SINGLE FAMILY",
+      condo_type == 2 ~ "DUPLEX",
+      condo_type == 3 ~ "TOWNHOUSE",
+      condo_type == 4 ~ "LOWRISE",
+      condo_type == 5 ~ "HIGHRISE",
+      TRUE ~ "no condo"
+    ))) %>% 
+    group_by(condo_type_char, tax_year) %>% 
+    summarize(
+      number_per_type = n()
+    ) %>% 
+    pivot_wider(id_cols = tax_year, names_from = condo_type_char, values_from = number_per_type)
+  
+  # bind all toghter
+  
+  per_year_info <- left_join(tmk_multi_by_year,
+                             bedsbath_per_year,
+                             by = "tax_year")
+  
+  per_year_info_2 <- left_join(per_year_info,
+                             condo_summary,
+                             by = "tax_year")
+  
+  
+  return(per_year_info_2)
+
+  
+}
+
+# apply to each df, and then r bind 
+
+
+summary_reports_list <- lapply(maui_dwell_dfs, create_summary_report)
+
+summary_report_allyears <- do.call(rbind, summary_reports_list)
+
+
+# save!
+
+write_csv(summary_report_allyears,
+         file.path(driver_dir,"4_OSDS_N_Runoff/output-data/qaqc/maui_dwell_changesummary.csv"))
+
+
+collapse_tmks <- function(df){
+  
+  #df <- maui_dwell_dfs[[1]]
+  df_collapse <- df %>%  janitor::clean_names() %>% select(-number, -percent_complete) %>% distinct() # this will only remove exact duplicates
+  return(df_collapse)
+}
+
+
+maui_collapsed_dfs <- lapply(maui_dwell_dfs, collapse_tmks)
+
+maui_dwelltmks_forjoin <- do.call(rbind,maui_collapsed_dfs)
+
+
+maui_dwelltmks_forjoin_noyear <- maui_dwelltmks_forjoin %>% 
+  select(-tax_year) %>% 
+  mutate(
+    parid = str_trim(as.character(parid)),
+    tax_id = substr(parid,1,8),
+    full_taxid = paste0("2",tax_id)) %>%
+  distinct()
+
+
+
+
+```
+
+
+### Step 2: Bring in IWS Permit data 
+
+- This is the "heart" of the database
+- Execute Join
+- Develop QA QC report 2 on which drop out. Note this is only for oahu
+
+```{r}
+
+# read in permit data - this includes all islands
+
+iws_permit_data <- read_csv(file.path(data_dir, "osds/shared-data/2009_Present_IWSList_Permits.csv"))
+
+
+# filter out just the permits in maui, and create permit ID tracker
+
+iws_maui_permits <- iws_permit_data %>% 
+  mutate(tmk_char = as.character(TMK)) %>% 
+  filter(str_starts(tmk_char,"2")) %>% 
+  rename(full_taxid = tmk_char) %>%  
+  rowid_to_column("permit_id") #2790
+
+
+# which ones have dwell information? 
+
+iws_maui_dwell_join <- inner_join(iws_maui_permits, maui_dwelltmks_forjoin_noyear, by = "full_taxid") %>% 
+  select(-percent_complete, ) %>% 
+  distinct() # 2599
+
+iws_maui_dwell_join_norepeats <- iws_maui_permits %>% 
+  filter(TMK %in% iws_maui_dwell_join$TMK) # 2559
+
+# which ones do not have dwell information?
+
+iws_maui_NOdwell <- iws_maui_permits %>% 
+  filter(TMK %!in% iws_maui_dwell_join$TMK) # 191
+
+write_csv(iws_maui_NOdwell,
+         file.path(driver_dir,"4_OSDS_N_Runoff/output-data/qaqc/maui_iwspermits_nodwellinginfo.csv"))
+
+
+# create version 
+
+```
+
+Results so far:
+- There are 2790 permits issues for Maui in this dataset
+- There are 2559 with dwell information 
+- There are 191 without Dwell information 
+- Condos, particularly low rise and high rise have increased a lot in Maui over the past 10 years
+
+### Step 2b: Identifying Upgrade Scenarios
+
+Here we will work to identify easy, tricky and hard scenarios. The steps are as follows:
+1. Create a flag that flags if a TMK is repeated
+
+```{r}
+
+library(janitor)
+
+# working with just the permit data, analyze duplicates for 1 permit issued to same place, and which years
+
+iws_maui_permits$is_duplicate <- duplicated(iws_maui_permits$TMK) | duplicated(iws_maui_permits$TMK, fromLast = TRUE)
+  
+iws_maui_permits_dups <- filter(iws_maui_permits, is_duplicate == TRUE) # 961
+
+iws_maui_permits_cl <- iws_maui_permits %>% 
+  clean_names() %>%
+  mutate(approval_date = mdy(final_approval_date),
+         year = year(approval_date))
+
+# create flag indicating if the duplicate is for the same year, or a different year
+
+iws_maui_permits_flag <- iws_maui_permits_cl %>% 
+  group_by(full_taxid) %>% 
+  mutate(
+    n_rows = n(),
+    n_year = n_distinct(year)
+  ) %>% 
+  ungroup() %>% 
+  mutate(
+    osds_flag = case_when(
+      n_rows > 1 & n_year > 1 ~ "possbile update or later addition",
+      n_rows > 1 & n_year == 1 ~ "possible multiple osds permits",
+      TRUE ~ NA_character_
+    )
+  )
+
+check_dups_again <- filter(iws_maui_permits_flag, is_duplicate == TRUE)
+
+# count up the different scenarios
+
+iws_duplicate_scenarios_maui <- iws_maui_permits_flag %>% 
+  group_by(osds_flag) %>% 
+  summarize(
+    total_tmks = length(unique(full_taxid))
+  )
+
+# save to qaqc
+
+write_csv(iws_duplicate_scenarios_maui,
+         file.path(driver_dir,"4_OSDS_N_Runoff/output-data/qaqc/maui_iwspermits_scenario_summary.csv"))
+
+```
+
+Results: 
+- 961 of the permits issued during this time frame were issued to the same TMK
+  - 227 indicate multiple permits for the same tmk for the same year
+  - 177 indicate multiple permits for different years
+- 1829 are one building, one permit, one year
+
+### Step 3: Assign Class to Permits
+
+The assignment of class is based on a previously determined scheme by Whittier and El Kadi (2014). The scheme is as follows:
+
+Class I = any system receiving soil treatment, with disposal types as bed, trench, and infiltration chambers
+Class II = Septic system discharging into seepage pit
+Class III = Effluent received primary treatment only 
+Class IV = Aerobic units discharging into a seepage pit. The effluent receives primary and secondary treatment. 
+
+Class V = multiple with at least one cesspool. So note this will only apply to those that weʻve flagged above that may have multiple
+
+
+```{r}
+
+
+library(janitor)
+
+# disposal types by treatment
+
+minimal_treatment <- c("Seepage Pit")
+
+primary_treatment <- c("Bed",
+                       "Trench",
+                       "Infiltrators / Chambers",
+                       "ET Bed-Irrigation System",
+                       "Presby")
+
+unknown_treatment <- c("Other","Unknown")
+
+combo_treatment <- c("Combination of two types")
+
+
+# apply to maui data
+
+iws_maui_permits_withclass <- iws_maui_permits_flag %>%
+  clean_names() %>% 
+  #filter(is.na(osds_flag)) %>% 
+  mutate(osds_class = case_when(
+    permit_type == "Septic Tank" & disposal_type %in% primary_treatment ~"1",
+    permit_type == "Septic Tank" & disposal_type %in% minimal_treatment ~"2",
+    permit_type == "Septic Tank" & disposal_type %in% unknown_treatment ~ "2", 
+    permit_type == "Septic Tank" & disposal_type %in% combo_treatment ~ "1", 
+    permit_type %in% c("Compost Toilet","Gray Water System","Compost Toilet/Gray Water System") & disposal_type %in% c("Other","Unknown")  ~ "3",
+    permit_type == "Compost Toilet" & disposal_type == "Bed" ~ "1",
+    permit_type == "Gray Water System" & disposal_type %in% c("Bed","Trench") ~ "3",
+    permit_type == "Aerobic Unit" & disposal_type %in% minimal_treatment ~ "4",
+    permit_type == "Aerobic Unit" & disposal_type %in% primary_treatment ~ "1",
+    permit_type == "Aerobic Unit" & disposal_type %in% unknown_treatment ~ "3",
+    permit_type == "Aerobic Unit" & disposal_type %in% combo_treatment ~ "1",
+    permit_type == "Presby (passive, NSF 40)" ~ "1",
+    permit_type == "Holding Tank (Government Only)" ~ "1",
+    permit_type == "Incinerating Toilet" ~ "1",
+    TRUE ~ "Can't assign MB" # the only one I couldnt assign just had some extra notes on the permit type
+  )) %>% 
+  mutate(osds_class = ifelse(osds_class == "Canʻt assign MB","1",osds_class)) # fix this one by hand
+
+
+
+```
+
+### Step 4: Count addresses and permits by TMK & find min and max years
+
+Parallel to the class assignment, here I examine the address column to try and figure out if we can ID multiple building scenarios just from the permit data. 
+
+```{r}
+
+# how many addresses per TMK can we identify?
+address_per_tmk <- iws_maui_permits_cl %>%
+  group_by(tmk) %>% 
+  mutate(address_full = ifelse(is.na(project_street_address2),project_street_address,paste(project_street_address,"-",project_street_address2))) %>% 
+  summarize(
+    n_addresses = length(unique(address_full)), # how many buildings on this TMK
+    n_permits = length(permit_id), # how many permits have they applied for in this time period
+    min_year = min(year),
+    last_year = max(year) # when these permits were issued
+  ) # write this one out
+
+# how many have more than one bulding? 
+
+nrow(address_per_tmk[address_per_tmk$n_addresses > 1, ]) # 148
+
+
+address_per_tmk_flag <- address_per_tmk %>% 
+  mutate(building_permit_scenario = case_when(
+    n_addresses == 1 & n_permits == 1  ~ "One building, one permit",
+    n_addresses == 1 & n_permits > 1 ~ "One buidling, multiple permits",
+    n_addresses > 1 & n_permits == 1 ~ "Multiple buildings, one permit",
+    n_addresses > 1 & n_permits > 1 ~ "Multiple buildings, Mulitple permits"
+  ),
+  year_scenario = case_when(
+    last_year == min_year ~ "All the same year",
+    TRUE ~ "Mulitple Years"
+  ))
+
+scenario_summary <- address_per_tmk_flag %>% 
+  group_by(building_permit_scenario,year_scenario) %>% 
+  summarize(
+    tmk_per_scenario = n()
+  )
+  
+write_csv(address_per_tmk,
+         file.path(driver_dir,"4_OSDS_N_Runoff/output-data/qaqc/maui_permits_and_buildings_pertmk.csv"),
+         append = FALSE)
+
+
+write_csv(scenario_summary,
+         file.path(driver_dir,"4_OSDS_N_Runoff/output-data/qaqc/maui_oahu_building_scenario.csv"),
+         append = FALSE)
+
+
+```
+
+**Results** from this tell us that:
+- 148 of tmks that applied for permits in this time period have multiple buildings. 
+- 1829 tmks are a one building, one permit scenario. Easy!
+- 77 are one building, multiple permits, multiple years. This suggests a replacement or upgrade. Also easyish
+- 179 are one building, multiple permits, all one year. 
+- 48 are multiple permits for multiple buildings and one year. Easy if 1) all permits the same class and 2) building # = permit number. 
+- 100 are multiple buildings, multiple permits, and multiple years. 
+  
+  
+```{r}
+
+easys <- address_per_tmk_flag %>% 
+  filter(building_permit_scenario == "One building, one permit")
+
+iws_maui_permits_easyscenario <- iws_maui_permits_withclass %>% 
+  filter(tmk %in% easys$tmk) %>% 
+  mutate(dwell_flag = ifelse(full_taxid %in% iws_maui_dwell_join$full_taxid,"Dwelling","Other")) %>% 
+  select(-n_rows,-n_year, -osds_flag)
+
+write_csv(iws_maui_permits_easyscenario,
+         file.path(driver_dir,"4_OSDS_N_Runoff/output-data/iws_maui_permits_easyscenario.csv"),
+         append = FALSE)
+
+# medium scenario is one building, multiple permits. assumption here is that these are multiple osds per building IF the year is the same. if not, its an upgrade. 
+
+tricky_tmks <- address_per_tmk_flag %>% 
+  filter(building_permit_scenario %in% c("One buidling, multiple permits"))
+
+iws_maui_permits_mediumscenario <- iws_maui_permits_withclass %>% 
+  filter(tmk %in% tricky_tmks$tmk) %>% 
+  mutate(dwell_flag = ifelse(full_taxid %in% iws_maui_dwell_join$full_taxid,"Dwelling","Other")) %>% 
+  select(-n_rows,-n_year, -osds_flag)
+
+
+# how many of these tmks are also in our dwell dataset? how many have multiple cards? 
+
+hard_tmks <- address_per_tmk_flag %>% 
+  filter(building_permit_scenario %in% c("Multiple buildings, Mulitple permits"))
+
+
+iws_maui_permits_hardscenario <- iws_maui_permits_withclass %>% 
+  filter(tmk %in% hard_tmks$tmk) %>% 
+  mutate(dwell_flag = ifelse(full_taxid %in% iws_maui_dwell_join$full_taxid,"Dwelling","Other")) %>% 
+  select(-n_rows,-n_year, -osds_flag)
+
+
+
+```
+  
+How does the number of hard-scenario TMKS compare to the number of dwellings with mulitple card #?
+
+```{r}
+
+dwell_hard_tmks <- iws_maui_dwell_join %>% filter(full_taxid %in% hard_tmks$tmk)
+
+length(unique(dwell_hard_tmks$full_taxid)) # 136
+
+length(unique(hard_tmks$tmk)) #148
+
+# so indicates that 12 of the hard scenarios are non-dwellings
+
+```
+  
+## Compare to Past Datasets to Complete the Time Series 
+
+We have to bring in the past OSDS dataset to have a record of what each tmk was bedroom wise and class wise prior to 2009 (which is when our permit data starts). Without it, we can only track changes and upgrades within the 2009 - 2020. Weʻll add this as a column. Once we do this, we can generate cesspool upgrade list. 
+
+There are two main categories of comparison from Step 2;
+- Easy situations where we have one building, one permit per tmk
+- More complex ones.
+
+### A) Compare to OTP (2010 timestamp)
+
+Let's start with the easy list. We'll read in the old OSDS dataset and assume that what ever is recorded for that tmk in there is what it was before 2010. If our new dataset has something different, we know its changed. 
+Important Assumption from Julia's work: if a location goes from septic, or better, to CESSPOOL is probably wrong? 
+
+For Maui, the data I downloaded from HI GIS is a bit different than OAHU because it is in wide format, with a column for each class, and the value in the column indicating the quantity of that class. there is also a total quantity.
+
+We only have classes 1 - 4 in this data. From the metadata, this represents: 
+
+- CLASS_I: Class I OSDS are those systems where the effluent is subjected to soil treatment 
+- CLASS_II: Class II OSDS are septic systems discharging to a seepage pit.  
+- CLASS_III: Class III OSDS are aerobic systems discharging to a seepage pit.
+- CLASS_IV: Class IV OSDS are c  cesspools.  
+- EFFLUENT: The total effluent flux in million gallons per day discharged within the TMK parcel. 
+
+
+This makes it tricky to match it up to our "one building one permit" data. So what Iʻm going to do, which isnt a perfect solution but will help us sort out changes for now, is use additive encoding, that creates unique codes for each class AND each combination of class. The rule is for category n, use 2^(n-1) for the code. Therefore the class column becomes: 
+
+| Combination                           | Sum |
+| ------------------------------------- | --- |
+| Class 1                               | 1   |
+| Class 2                               | 2   |
+| Class 1 + Class 2                     | 3   |
+| Class 3                               | 4   |
+| Class 1 + Class 3                     | 5   |
+| Class 2 + Class 3                     | 6   |
+| Class 1 + Class 2 + Class 3           | 7   |
+| Class 4                               | 8   |
+| Class 1 + Class 4                     | 9   |
+| Class 2 + Class 4                     | 10  |
+| Class 1 + Class 2 + Class 4           | 11  |
+| Class 3 + Class 4                     | 12  |
+| Class 1 + Class 3 + Class 4           | 13  |
+| Class 2 + Class 3 + Class 4           | 14  |
+| Class 1 + Class 2 + Class 3 + Class 4 | 15  |
+
+
+
+```{r}
+
+library(janitor) 
+
+# read in maui and molokai. check lanai?
+otp_bob_maui <- read_csv(file.path(driver_dir,"4_OSDS_N_RUnoff/input-data/OSDS_HIGIS_2010/On-site_Sewage_Disposal_Systems_-_Maui.csv")) %>% 
+  clean_names()
+
+otp_bob_molo <- read_csv(file.path(driver_dir,"4_OSDS_N_RUnoff/input-data/OSDS_HIGIS_2010/On-site_Sewage_Disposal_Systems_-_Molokai.csv")) %>% 
+  clean_names()
+
+otp_bob <- rbind(otp_bob_maui, otp_bob_molo)
+
+
+# different cols for different counties
+otp_bob_cols <- otp_bob %>% 
+  select(starts_with("tmk"),starts_with("class"),"osds_qty","commercial") #12780 maui, 14431 molokai
+
+onebuilding_onepermit <- read.csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/iws_maui_permits_easyscenario.csv")) #1829
+
+# how many duplicates
+
+onebuilding_onepermit_distinct <- onebuilding_onepermit %>% 
+  select(-permit_id) %>% 
+  distinct() # none, cool!
+
+# first, do all these new ones exist in the old data? if not, then they are new osds builds
+
+otp_bob_filtered_byOBOP <- otp_bob_cols %>% 
+  mutate(tmk_9 = as.integer(tmk)) %>% 
+  filter(tmk_9 %in% onebuilding_onepermit$tmk) %>% #1301
+  mutate(year_issued = 2010) %>% 
+  rowid_to_column("permit_id") %>% 
+  mutate(change_flag = "new permit detected since otp") # 
+
+otp_bob_tmk_NOTinOBOP <- otp_bob_cols %>% 
+  mutate(tmk_9 = as.integer(tmk)) %>% 
+  filter(tmk_9 %!in% onebuilding_onepermit$tmk) %>% # 12591
+  mutate(year_issued = 2009) %>% 
+  mutate(change_flag = "no new permit application since otp")
+
+write_csv(otp_bob_tmk_NOTinOBOP,
+          file.path(driver_dir,"4_OSDS_N_Runoff/output-data/otp_osds_wo_permitupgrade_mauinui.csv")) 
+
+# which are totally new, ie not updates?
+
+onebuilding_onepermit_NEW_since2010 <- onebuilding_onepermit %>% 
+  filter(tmk %!in% otp_bob_filtered_byOBOP$tmk_9) # 528 
+
+onebuilding_onepermit_NEW_since2010_distincttmk <- onebuilding_onepermit_NEW_since2010 %>% 
+  select(-permit_id) %>% 
+  distinct() 
+
+# use set diff to see if its the same
+tmks_not_inbob <- setdiff(onebuilding_onepermit$tmk, otp_bob_filtered_byOBOP$tmk_9) #528 YAY
+
+onebuilding_onepermit_NEW_since2010_otherway <- onebuilding_onepermit %>% 
+  filter(tmk %in% tmks_not_inbob) %>% 
+  mutate(change_flag = "new since otp") 
+
+
+write_csv(onebuilding_onepermit_NEW_since2010_otherway,
+          file.path(driver_dir,"4_OSDS_N_Runoff/output-data/mauinui_osds_new_since_otp.csv"))
+
+
+# -------- using just the data represented in both, pivot wider with class and number per year column. fix class so its more comparable to other data
+
+otp_bob_filtered_byOBOP_wide <- otp_bob_filtered_byOBOP %>% 
+  select(-class) %>% 
+  pivot_longer(cols = starts_with("class"), names_to = "class", values_to = "quantity") %>% 
+  filter(quantity != 0) %>% 
+  rename(ttl_osds_2010 = osds_qty) %>% 
+  mutate(osds_class_otp = case_when(
+    class == "class_iv" ~ 8, # cesspool 
+    class == "class_iii" ~ 4,
+    class == "class_ii" ~ 2,
+    class == "class_i" ~ 1
+  )) %>%
+  pivot_wider(id_cols = c("permit_id","tmk","ttl_osds_2010"), names_from = c("year_issued","class"), values_from = c("quantity"))
+  #pivot_wider(id_cols = c("permit_id","tmk","ttl_osds"), names_from = c("year_issued","osds_class_otp"),
+             # values_from = quantity)
+
+# before bringing in new data, check if there are duplicate tmks in bobs data
+
+dups_otp_fiteredOBOP <- otp_bob_filtered_byOBOP_wide %>% mutate(duplicated = duplicated(tmk)) # none
+
+# how many have more than one?
+
+otp_bob_morethan1osds <- otp_bob_filtered_byOBOP_wide %>% 
+  filter(ttl_osds_2010 > 1) #318 ~ 30% of total 
+
+# I realized that the long version is fine for our comparison of "last year updated"
+otp_bob_filtered_byOBOP_wideENC <- otp_bob_filtered_byOBOP %>% 
+  select(-class) %>% 
+  pivot_longer(cols = starts_with("class"), names_to = "class", values_to = "quantity") %>% 
+  filter(quantity != 0) %>% 
+  rename(ttl_osds_2010 = osds_qty) %>% 
+  mutate(osds_class_otp = case_when(
+    class == "class_iv" ~ 8, # cesspool 
+    class == "class_iii" ~ 4,
+    class == "class_ii" ~ 2,
+    class == "class_i" ~ 1
+  )) %>%
+  pivot_wider(id_cols = c("permit_id","tmk","ttl_osds_2010"), names_from = c("year_issued","class"), values_from = c("osds_class_otp")) %>% 
+    mutate(combo_code = rowSums(across(starts_with("2010")), na.rm = TRUE))
+
+# now make this long again, now that weʻve collapsed the multi-class info into one number. NOTE: in this version we loose quantity!!
+
+otp_bob_filtered_byOBOP_longENC <- otp_bob_filtered_byOBOP_wideENC %>%
+  select(-starts_with("2010"), -permit_id)
+
+
+
+# ---------- now pivot the NEW data, "easy" category, wider to match --------------------- #
+
+onebuild_onepermit_inbob <- onebuilding_onepermit%>% 
+  filter(tmk %in% otp_bob_filtered_byOBOP$tmk)
+
+onebuild_onepermit_inbob_wide <- onebuild_onepermit_inbob %>% 
+  pivot_wider(id_cols = c("permit_id","tmk"), names_from = "year", values_from = c("permit_type","osds_class"))
+
+dups_obop_inbob <- onebuild_onepermit_inbob_wide %>% mutate(duplicated = duplicated(tmk))
+
+# -------------- Join our two wide tables together ----------------------------------- #
+
+# IMPORTANT note: since 318 of the bob data have more than one OSDS, but the new data here are examples of just one building, one permit, if any of the new data match to the old ones with more than one osds weʻll have to make an assumption about which one was updated. 
+
+all_osds_present_inboth <- left_join(dups_obop_inbob, otp_bob_filtered_byOBOP_longENC, by = c("tmk")) # none dropped in the join. nice
+
+# so the next analysis will determine the most recent year a tmk was upgraded. We can add a flag for if there was an upgrade and there are multiple OSDS on the property. hoping that most of these did not have an upgrade. 
+
+
+all_permit_present_inboth_long <- all_osds_present_inboth %>% 
+  rename(otp_class_2010 = combo_code) %>% 
+  select(-starts_with("permit_type")) %>% 
+  pivot_longer(cols = starts_with("osds"),
+               names_to = "year",
+               values_to = "class",
+               values_drop_na = TRUE) %>% 
+  mutate(
+    year_num = as.integer(str_remove(year, "osds_class_"))  # extract numeric year
+  )
+
+# at this point it may be helpful to filter out ones that are > quantity wise? or not
+
+last_permit_persentinboth <- all_permit_present_inboth_long %>% 
+  group_by(tmk) %>% 
+  slice_max(year_num, n = 1, with_ties = FALSE) %>% 
+  mutate(class_last = as.numeric(class),
+         class_last_year = year_num,
+         class_otp = as.numeric(otp_class_2010)) %>% 
+  mutate(upgrade_yn = case_when(
+    class_last < class_otp & class_otp %in% c(1,2,4,8) ~ "upgrade occured on a single osds",
+    class_last < class_otp & class_otp %!in% c(1,2,4,8) ~ "change occured on one of many existing osds",
+    class_last == class_otp & class_otp %in% c(1,2,4,8) & class_last_year > 2010 ~ "addition",
+    class_last == class_otp & class_otp %in% c(1,2,4,8) & class_last_year <= 2010 ~ "data overlap",
+    class_last > class_otp  ~ "check class assignment"
+  )) %>% 
+  mutate(cesspool_upgrade = case_when(
+    class_otp == 8 & class_last < 4 ~ "cesspool upgraded",
+    class_otp %in% c(9,10,11,12,13,14,15) & class_last < 4 ~ "maybe cesspool upgraded - multiple existing osds",
+    class_last == 4 & class_last_year > 2010 ~ "new cesspool permit",
+    class_otp == 4 & class_last == 4 & class_last_year %in% c(2009,2010) ~ "duplicate, not upgraded",
+    class_otp %!in% c(9,10,11,12,13,14,15) ~ "na"
+  ))
+
+write_csv(last_permit_persentinboth,
+          file.path(driver_dir,"4_OSDS_N_Runoff/output-data/maui_all_possible_OSDSupgrades_withflag.csv"))
+
+```
+
+So there are a number here where there are more than one cesspool - we may want to make an assumption that if there is one new permit for someting better than a cesspool (ie a septic tank), its replacing both cesspools? OR, again another place for sensitivity analysis. 
+
+LAST STEP: TALLY 
+
+```{r}
+
+upgrade_tally <- last_permit_persentinboth %>% 
+  group_by(upgrade_yn) %>% 
+  summarize(
+    total_n = n()
+  )
+
+cesspool_upgrade_tally <-  last_permit_persentinboth %>% 
+  group_by(cesspool_upgrade) %>% 
+  summarize(
+    total_n = n()
+  )
+
+
+```
+
+
+RESULTS:
+
+Without counting our more difficult scenarios, we have recorded 632 upgrades, 346 possible additions or replacements of same time, 55 where a change occurred on a tmk with many existing osds. 
+
+Of the upgrades (N = 632): 
+- 611 are cesspool upgrades
+- an additional 42 are upgrades that occurred on tmks with many osds, one of which is a cesspool
+- 4 are new cesspool permits since OTP
+

@@ -205,16 +205,16 @@ tmk_converted_allinfo <- oahu_dwells_cleanedup %>%
 
 # ----------------- Tables and Lists to Export ------------------- #
 
-st_write(ownership_by_year,
+write_csv(ownership_by_year,
          file.path(driver_dir,"4_OSDS_N_Runoff/output-data/qaqc/ownership_peryear.csv"))
 
-st_write(bedsbath_per_year,
+write_csv(bedsbath_per_year,
          file.path(driver_dir,"4_OSDS_N_Runoff/output-data/qaqc/bedsbath_peryear.csv"))
 
-st_write(tmk_with_card_change,
+write_csv(tmk_with_card_change,
          file.path(driver_dir,"4_OSDS_N_Runoff/output-data/qaqc/tmkswithcardchange_peryear.csv"))
 
-st_write(tmk_converted_allinfo,
+write_csv(tmk_converted_allinfo,
          file.path(driver_dir,"4_OSDS_N_Runoff/output-data/qaqc/tmks_withhprchange_allinfo.csv"))
 ```
 
@@ -522,7 +522,7 @@ For the other scenarios we'll have to make MORE ASSUMPTIONS. First, we can compa
 
 # if starting here read in addresses per tmk
 
-# clean up, identify as dwell or non-dwell and save "easy" permit situations
+# clean up, identify as dwell or non-dwell, join to class data and save "easy" permit situations
 
 easys <- address_per_tmk %>% 
   filter(building_permit_scenario == "One building, one permit")
@@ -669,8 +669,6 @@ otp_bob_filtered_byOBOP <- otp_bob_cols %>%
   rowid_to_column("permit_id") %>% 
   mutate(change_flag = "new permit detected since otp")
 
-
-
 otp_bob_tmk_notinOBOP <- otp_bob_cols %>% 
   mutate(tmk_9 = as.integer(tmk_9)) %>% 
   filter(tmk_9 %!in% onebuilding_onepermit$tmk) %>% # 12591
@@ -810,9 +808,5 @@ Of those 813, 754 were cesspool upgrades!
 - and 332 upgrades from a non-cesspool odsds
 - and 1 that might just be a duplicate
 
-
-### B) Compare to WH (2017 timestamp), Hawaii only
-
-Not possible until we have the updated HI data. 
 
 
