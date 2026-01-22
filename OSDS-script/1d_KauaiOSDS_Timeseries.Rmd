@@ -1,0 +1,312 @@
+---
+title: "Kauai OSDS Timeseries"
+author: "Madeline Berger"
+date: "2026-01-14"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+
+library(here)
+
+source(here("workflow/setup.R"))
+
+
+
+```
+
+## New Data: clean up and join 
+
+### Step 1: Clean Up Dwell Data
+
+The Kauai data comes to us pre-parsed, which is great. Here we will just generate the same summary tables as we did for Oahu. We will have to read in each excel file here and do some cleaning. 
+
+The data was sent as one giant CSV.
+
+- first I'll rename the columns
+- select the ones we need for the "report"
+- run the function
+
+
+```{r dwell clean}
+
+# use data table because this csv is large
+
+library(data.table)
+library(janitor)
+
+kauai_raw_dwell <- fread(file.path(driver_dir,"4_OSDS_N_Runoff/large-input-data/Dwelling_Data_Raw/Kauai_DwellRaw_1122025/KAUAI_CO_DWELDAT_UHDataRequest_010826.csv"))
+
+kauai_clean_names <- kauai_raw_dwell %>% clean_names()
+
+```
+
+
+
+Create summary report - same function adjusted for column names
+
+```{r}
+
+
+create_summary_report = function(df){
+  
+  ### for testing ###
+  
+  #df <- maui_dwell_dfs[[1]]
+  
+  ######################
+  
+  dwells_clean_names <- janitor::clean_names(df) %>% mutate(card_char = as.character(card))
+  
+  #1 tmks per year, how many have > 1 card
+  tmk_multi_by_year <- dwells_clean_names %>%
+    group_by(tax_year, parid_full_parcel_id) %>%
+    summarize(n_cards = n_distinct(card_char), .groups = "drop") %>%
+    group_by(tax_year) %>%
+    summarize(
+      total_TMKs = n(), # total tmks
+      TMKs_with_multiple_cards = sum(n_cards > 1), # how many with multiple cards
+      pct_multi = 100 * TMKs_with_multiple_cards / total_TMKs) # percent with more than 1 card
+
+  #2 beds and baths per year
+  bedsbath_per_year <- dwells_clean_names %>% 
+  mutate(bedrooms = ifelse(is.na(bedrooms), 0, as.numeric(bedrooms)),
+         full_baths = ifelse(is.na(fullbath), 0, as.numeric(fullbath))) %>% # what if its NA?
+  group_by(tax_year) %>% 
+  summarize(
+    n_beds = sum(bedrooms, na.rm = TRUE),
+    n_baths = sum(full_baths, na.rm = TRUE)
+  )
+  
+  #3  percent condo in each year. only relevent for Maui
+  
+  # condo_summary <- dwells_clean_names %>% 
+  #   mutate(condo_type_char = str_to_lower(
+  #     case_when(
+  #     condo_type == 1 ~ "SINGLE FAMILY",
+  #     condo_type == 2 ~ "DUPLEX",
+  #     condo_type == 3 ~ "TOWNHOUSE",
+  #     condo_type == 4 ~ "LOWRISE",
+  #     condo_type == 5 ~ "HIGHRISE",
+  #     TRUE ~ "no condo"
+  #   ))) %>% 
+  #   group_by(condo_type_char, tax_year) %>% 
+  #   summarize(
+  #     number_per_type = n()
+  #   ) %>% 
+  #   pivot_wider(id_cols = tax_year, names_from = condo_type_char, values_from = number_per_type)
+  
+  # bind all toghter
+  
+  per_year_info <- left_join(tmk_multi_by_year,
+                             bedsbath_per_year,
+                             by = "tax_year")
+  
+  # per_year_info_2 <- left_join(per_year_info,
+  #                            condo_summary,
+  #                            by = "tax_year")
+  # 
+  
+  return(per_year_info)
+
+  
+}
+
+
+# apply to kauai
+
+
+kauai_summary_report <- create_summary_report(kauai_raw_dwell)
+
+
+write_csv(kauai_summary_report,
+         file.path(driver_dir,"4_OSDS_N_Runoff/output-data/qaqc/kauai_dwell_summary_report.csv"))
+
+# collapse to get list of unique tmks. initially we have N = 534754
+
+kaui_clean_names_coll <- kauai_clean_names %>%
+  select(-tax_year)%>%
+  mutate(full_taxid = as.character(tmk_includes_island_4)) %>% 
+  distinct() #N = 53304
+
+```
+
+
+### Step 2: Bring in IWS Permit data 
+
+- This is the "heart" of the database
+- Execute Join
+- Develop QA QC report 2 on which drop out and therefore likely represent commercial parcels. 
+
+
+```{r}
+
+iws_permit_data <- read_csv(file.path(data_dir, "osds/shared-data/2009_Present_IWSList_Permits.csv"))
+
+
+
+# filter out Kauai using tmk digits, and then add an id by row 
+
+
+# filter out just the permits in maui, and create permit ID tracker
+
+iws_kauai_permits <- iws_permit_data %>% 
+  mutate(tmk_char = as.character(TMK)) %>% 
+  filter(str_starts(tmk_char,"4")) %>% 
+  rename(full_taxid = tmk_char) %>%  
+  rowid_to_column("permit_id") #2406 permits since 2010
+
+# join with collapsed tmks, and filter with tmks.the row number for both should be the same, and < 2406
+
+iws_kauai_dwell_join <- inner_join(iws_kauai_permits, kaui_clean_names_coll, by = "full_taxid") %>% 
+  distinct() # 12252 rows, 1741 tmks
+
+iws_kauai_dwell_join_norepeats <- iws_kauai_permits %>% 
+  filter(full_taxid %in% kaui_clean_names_coll$full_taxid) # 2115 rows, 1741 tmks. cool
+
+# filter out permits without dwell data
+
+
+iws_kauai_NOdwell <- iws_kauai_permits %>% 
+  filter(full_taxid %!in% iws_kauai_dwell_join$full_taxid) # 291
+
+write_csv(iws_kauai_NOdwell,
+         file.path(driver_dir,"4_OSDS_N_Runoff/output-data/qaqc/kauai_iwspermits_nodwellinginfo.csv"))
+
+
+```
+
+
+Results so far:
+- There are 2406 permits issued for Kauai in this dataset
+- There are 2115 with dwell information, representing 1741 TMKS 
+- There are 291 without Dwell information 
+- Condos, particularly low rise and high rise have increased a lot in Maui over the past 10 years
+
+### Step 2b: Identifying Upgrade Scenarios
+
+Here we will work to identify easy, tricky and hard scenarios. The steps are as follows:
+1. Create a flag that flags if a TMK is repeated in the same year or different year
+2. Count up scenarios and save
+
+
+```{r}
+
+# working with just the permit data, analyze duplicates for 1 permit issued to same place, and which years
+
+iws_kauai_permits$is_duplicate <- duplicated(iws_kauai_permits$TMK) | duplicated(iws_kauai_permits$TMK, fromLast = TRUE)
+  
+iws_kauai_permits_dups <- filter(iws_kauai_permits, is_duplicate == TRUE) # 805
+
+iws_kauai_permits_cl <- iws_kauai_permits %>% 
+  clean_names() %>%
+  mutate(approval_date = mdy(final_approval_date),
+         year = year(approval_date))
+
+# create flag indicating if the duplicate is for the same year, or a different year
+
+iws_kauai_permits_flag <- iws_kauai_permits_cl %>% 
+  group_by(full_taxid) %>% 
+  mutate(
+    n_rows = n(),
+    n_year = n_distinct(year)
+  ) %>% 
+  ungroup() %>% 
+  mutate(
+    osds_flag = case_when(
+      n_rows > 1 & n_year > 1 ~ "possbile update or later addition",
+      n_rows > 1 & n_year == 1 ~ "possible multiple osds permits",
+      TRUE ~ NA_character_
+    )
+  )
+
+check_dups_again <- filter(iws_kauai_permits_flag, is_duplicate == TRUE)
+
+# count up the different scenarios
+
+iws_duplicate_scenarios_kauai <- iws_kauai_permits_flag %>% 
+  group_by(osds_flag) %>% 
+  summarize(
+    total_tmks = length(unique(full_taxid))
+  )
+
+# save to qaqc
+
+write_csv(iws_duplicate_scenarios_kauai,
+         file.path(driver_dir,"4_OSDS_N_Runoff/output-data/qaqc/kauai_iwspermits_scenario_summary.csv"))
+
+
+
+
+```
+
+
+Results: 
+- 805 of the PERMITS issued during this time frame were issued to the same TMK, which represents 252 tnks
+  - 82 indicate multiple permits for the same tmk for the same year
+  - 170 indicate multiple permits for different years
+  - The rest are for unique buildings or addresses on the same tmk
+- 1601 are one building, one permit, one year
+
+### Step 3: Assign Class to Permits
+
+The assignment of class is based on a previously determined scheme by Whittier and El Kadi (2014). The scheme is as follows:
+
+Class I = any system receiving soil treatment, with disposal types as bed, trench, and infiltration chambers
+Class II = Septic system discharging into seepage pit
+Class III = Effluent received primary treatment only 
+Class IV = Aerobic units discharging into a seepage pit. The effluent receives primary and secondary treatment. 
+
+Class V = multiple with at least one cesspool. So note this will only apply to those that weʻve flagged above that may have multiple
+
+```{r}
+
+library(janitor)
+
+# disposal types by treatment
+
+minimal_treatment <- c("Seepage Pit",
+                       "Cesspool-New")
+
+primary_treatment <- c("Bed",
+                       "Trench",
+                       "Infiltrators / Chambers",
+                       "ET Bed-Irrigation System",
+                       "Presby")
+
+unknown_treatment <- c("Other","Unknown")
+
+combo_treatment <- c("Combination of two types")
+
+
+# apply to kauai data
+
+iws_kauai_permits_withclass <- iws_kauai_permits_flag %>%
+  clean_names() %>% 
+  #filter(is.na(osds_flag)) %>% 
+  mutate(osds_class = case_when(
+    permit_type == "Septic Tank" & disposal_type %in% primary_treatment ~"1",
+    permit_type == "Septic Tank" & disposal_type %in% minimal_treatment ~"2",
+    permit_type == "Septic Tank" & disposal_type %in% unknown_treatment ~ "2", 
+    permit_type == "Septic Tank" & disposal_type %in% combo_treatment ~ "1", 
+    permit_type %in% c("Compost Toilet","Gray Water System","Compost Toilet/Gray Water System") & disposal_type %in% c("Other","Unknown")  ~ "3",
+    permit_type %in% c("Compost Toilet","Compost Toilet/Gray Water System") & disposal_type == "Bed" ~ "1",
+    permit_type == "Gray Water System" & disposal_type %in% c("Bed","Trench") ~ "3",
+    permit_type == "Aerobic Unit" & disposal_type %in% minimal_treatment ~ "4",
+    permit_type == "Cesspool-New" ~ "4",
+    permit_type == "Aerobic Unit" & disposal_type %in% primary_treatment ~ "1",
+    permit_type == "Aerobic Unit" & disposal_type %in% unknown_treatment ~ "3",
+    permit_type == "Aerobic Unit" & disposal_type %in% combo_treatment ~ "1",
+    permit_type == "Presby (passive, NSF 40)" ~ "1",
+    permit_type == "Holding Tank (Government Only)" ~ "1",
+    permit_type == "Incinerating Toilet" ~ "1",
+    TRUE ~ "Can't assign MB" # the only one I couldnt assign just had some extra notes on the permit type
+  )) %>% 
+  mutate(osds_class = ifelse(osds_class == "Canʻt assign MB","1",osds_class)) # fix this one by hand
+
+
+
+```
+

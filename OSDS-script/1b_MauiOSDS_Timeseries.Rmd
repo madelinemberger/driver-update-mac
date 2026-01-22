@@ -156,6 +156,8 @@ summary_report_allyears <- do.call(rbind, summary_reports_list)
 write_csv(summary_report_allyears,
          file.path(driver_dir,"4_OSDS_N_Runoff/output-data/qaqc/maui_dwell_changesummary.csv"))
 
+# lastly, collapse so we just have one row per tmk. 
+
 
 collapse_tmks <- function(df){
   
@@ -188,7 +190,7 @@ maui_dwelltmks_forjoin_noyear <- maui_dwelltmks_forjoin %>%
 
 - This is the "heart" of the database
 - Execute Join
-- Develop QA QC report 2 on which drop out. Note this is only for oahu
+- Develop QA QC report 2 on which drop out and therefore likely represent commercial parcels. 
 
 ```{r}
 
@@ -237,7 +239,8 @@ Results so far:
 ### Step 2b: Identifying Upgrade Scenarios
 
 Here we will work to identify easy, tricky and hard scenarios. The steps are as follows:
-1. Create a flag that flags if a TMK is repeated
+1. Create a flag that flags if a TMK is repeated in the same year or different year
+2. Count up scenarios and save
 
 ```{r}
 
@@ -371,7 +374,7 @@ address_per_tmk <- iws_maui_permits_cl %>%
     last_year = max(year) # when these permits were issued
   ) # write this one out
 
-# how many have more than one bulding? 
+# how many have more than one building? 
 
 nrow(address_per_tmk[address_per_tmk$n_addresses > 1, ]) # 148
 
@@ -717,3 +720,4 @@ Of the upgrades (N = 632):
 - an additional 42 are upgrades that occurred on tmks with many osds, one of which is a cesspool
 - 4 are new cesspool permits since OTP
 
+##

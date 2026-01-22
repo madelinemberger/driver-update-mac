@@ -1,0 +1,309 @@
+---
+title: "Hawaii OSDS Timeseries"
+author: "Madeline Berger"
+date: "2025-12-30"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(here)
+
+source(here("workflow/setup.R"))
+
+```
+
+
+## New Data: clean up and join 
+
+### Step 1: Clean Up Dwell Data
+
+The Hawaii data comes to us raw in text files, similar to Oahu. Here we will just generate the same summary tables as we did for Oahu. We will have to read in each excel file here and do some cleaning. 
+
+This report should tell us:
+
+- total number of TMKS assessed each year for Oahu
+- how many TMKS are single owner versus multiple owner per year of data
+- how many TMKS have more than one card (i.e. more than one building assessed on the parcel) per year
+- Summary of bedrooms and bathrooms per year?
+
+
+This might get long - the Oahu data was quite messy. Will just start with 2010
+
+```{r}
+
+library(readr)
+
+# try estimated col speces
+col_specs_hi <- fwf_positions(
+  start = c(
+    1, 15, 20, 28, 45, 49, 67, 83, 99, 115, 131, 152, 158, 164, 168, 172,
+    178, 185, 199, 215, 230, 245, 260, 326, 334, 354, 371, 379, 387
+  ),
+  end = c(
+    13, 18, 27, 44, 45, 53, 67, 83, 99, 115, 133, 153, 159, 166, 174, 180,
+    185, 185, 201, 215, 230, 245, 260, 329, 338, 358, 376, 384, 392
+  )
+)
+
+# these are from Oahu clean - they do better for 2016 - 2018
+col_specs_old <- fwf_positions(
+  start = c(
+    1, 2, 15, 20, 24, 44, 48, 52, 72, 92, 112, 132, 152, 154,
+    179, 186, 193, 199, 201, 202, 206, 211, 216, 218, 238, 239,
+    259, 279, 299, 319, 343, 355, 357, 361, 364, 384, 404, 434,
+    438, 443, 447, 448, 470, 479, 490, 495, 503, 510
+  ),
+  end = c(
+    1, 14, 18, 23, 43, 44, 47, 71, 91, 111, 131, 151, 153, 173,
+    180, 187, 194, 200, 201, 201, 207, 212, 217, 237, 238, 258,
+    278, 298, 318, 342, 354, 356, 360, 363, 383, 403, 433, 437,
+    442, 446, 448, 469, 478, 489, 494, 502, 509, 515 
+  )
+)
+
+# this one works best for anything before 2015
+col_specs_2015 <- fwf_positions(
+  start = c(1, 2, 15, 20, 24, 44, 49, 52, 72, 92,
+            112, 132, 152, 154, 179, 186, 193, 199, 201, 202,
+            206, 211, 217, 218, 238, 239, 259, 279, 299, 319,
+            343, 349, 356, 358, 365, 373, 375, 379, 391, 411,
+            413, 452, 456, 457, 461, 465, 487, 497, 508, 513,
+            521, 528),
+  end   = c(1, 14, 19, 23, 43, 48, 51, 71, 91, 111,
+            131, 151, 153, 178, 185, 192, 198, 200, 201, 205,
+            210, 216, 217, 237, 238, 258, 278, 298, 318, 342,
+            348, 355, 357, 364, 372, 374, 378, 390, 410, 412,
+            451, 455, 456, 460, 464, 486, 496, 507, 512, 520,
+            527, 534)  
+)
+
+# try this one for later years?
+
+col_specs_2022 <- fwf_positions(
+  start = c(1, 2, 15, 20, 24, 44, 49, 52, 72, 92, 112, 132, 152, 154, 179, 186, 193, 199, 201, 202,
+            206, 211, 217, 218, 238, 239, 259, 279, 299, 319,
+            343, 349, 356, 358, 365, 373, 375, 379, 391, 411,
+            413, 452, 457, 461, 462, 466, 488, 497, 508, 513,
+            521, 528),
+  end = c(1, 14, 19, 23, 43, 48, 51, 71, 91, 111,131, 151, 153, 178, 185, 192, 198, 200, 201, 205,
+          210, 216, 217, 237, 238, 258, 278, 298, 318, 342,
+          348, 355, 357, 364, 372, 374, 378, 390, 410, 412,
+          451, 456, 460, 461, 465, 487, 496, 507, 512, 520,
+          527,534))
+
+
+# start with 2011 - 2015
+
+hi_dwell_2011 <- read_fwf(file.path(driver_dir,"4_OSDS_N_Runoff/input-data/Dwelling_Data_Raw/Hawaii_DwellRaw_12182025/2011/DWELDAT.TXT"),
+                          col_positions = col_specs_2015,
+                          na = c("", "NA"),
+                          col_types = cols(.default = col_character())) %>%
+  mutate(across(everything(), ~trimws(.))) 
+
+hi_dwell_2013 <- read_fwf(file.path(driver_dir,"4_OSDS_N_Runoff/input-data/Dwelling_Data_Raw/Hawaii_DwellRaw_12182025/2013/DWELDAT.TXT"),
+                          col_positions = col_specs_2015,
+                          na = c("", "NA"),
+                          col_types = cols(.default = col_character())) %>%
+  mutate(across(everything(), ~trimws(.))) 
+
+hi_dwell_2014 <- read_fwf(file.path(driver_dir,"4_OSDS_N_Runoff/input-data/Dwelling_Data_Raw/Hawaii_DwellRaw_12182025/2014/DWELDAT.TXT"),
+                          col_positions = col_specs_2015,
+                          na = c("", "NA"),
+                          col_types = cols(.default = col_character())) %>%
+  mutate(across(everything(), ~trimws(.))) 
+
+hi_dwell_2015 <- read_fwf(file.path(driver_dir,"4_OSDS_N_Runoff/input-data/Dwelling_Data_Raw/Hawaii_DwellRaw_12182025/2015/DWELDAT.TXT"),
+                          col_positions = col_specs_2015,
+                          na = c("", "NA"),
+                          col_types = cols(.default = col_character())) %>%
+  mutate(across(everything(), ~trimws(.))) 
+
+hi_dwell_2016 <- read_fwf(file.path(driver_dir,"4_OSDS_N_Runoff/input-data/Dwelling_Data_Raw/Hawaii_DwellRaw_12182025/2016/DWELDAT.TXT"),
+                          col_positions = col_specs_2015,
+                          na = c("", "NA"),
+                          col_types = cols(.default = col_character())) %>%
+  mutate(across(everything(), ~trimws(.))) # this one still ok
+
+# use this code to check others
+
+
+
+
+
+```
+
+For Hawaii, Iʻm going to try a slightly different approach where I filter before worrying about the column parsing. Just to make things lighter 
+
+
+```{r}
+
+library(readr)
+library(dplyr)
+library(purrr)
+
+# read in HI iws permits
+
+iws_permit_data <- read_csv(file.path(data_dir, "osds/shared-data/2009_Present_IWSList_Permits.csv"))
+
+
+# filter out just the permits in maui, and create permit ID tracker
+
+iws_hi_permits <- iws_permit_data %>% 
+  mutate(tmk_char = as.character(TMK)) %>% 
+  filter(str_starts(tmk_char,"3")) %>% 
+  rename(full_taxid = tmk_char) %>%  
+  rowid_to_column("permit_id") # 7347
+
+tmks_permits <- iws_hi_permits$full_taxid
+
+# function to go get and read in each text file, parse, and filter
+read_and_filter_hi_dwell <- function(year, driver_dir, col_specs, tmks_permits) {
+  file_path <- file.path(driver_dir,
+                         "4_OSDS_N_Runoff/input-data/Dwelling_Data_Raw/Hawaii_DwellRaw_12182025",
+                         as.character(year),
+                         "DWELDAT.TXT")
+  
+  read_fwf(file_path,
+           col_positions = col_specs,
+           na = c("", "NA"),
+           col_types = cols(.default = col_character())) %>%
+    mutate(across(everything(), ~trimws(.))) %>%
+    # Rename first two columns
+    rename(jursi_id = 1, tmk = 2) %>%
+    # Create tmk_13 and tmk_9
+    mutate(
+      tmk_13 = paste0(jursi_id, tmk),
+      tmk_9  = substr(tmk_13, 1, nchar(tmk_13) - 4)
+    ) %>%
+    # Filter by the TMKs we care about
+    filter(tmk_9 %in% tmks_permits)
+}
+
+years0 <- 2010:2012
+
+hi_dwell_filtered_2010_2012_list <- map(years0, ~read_and_filter_hi_dwell(.x, driver_dir, col_specs_old, tmks_permits)) %>%
+  set_names(years0)
+
+hi_dwell_filtered_2010_2012 <- do.call(rbind,hi_dwell_filtered_2010_2012_list)
+
+years1 <- 2013:2015
+
+hi_dwell_filtered_2013_2015_list <- map(years, ~read_and_filter_hi_dwell(.x, driver_dir, col_specs_2015, tmks_permits)) %>%
+  set_names(years1)
+
+hi_dwell_filtered_2013_2015 <- do.call(rbind,hi_dwell_filtered_2011_2015_list)
+
+
+years2 <- 2019:2020
+
+hi_dwell_filtered_2019_2020_list <- map(years2, ~read_and_filter_hi_dwell(.x, driver_dir, col_specs_old, tmks_permits)) %>%
+  set_names(years2)
+
+hi_dwell_filtered_2019_2020 <- do.call(rbind,hi_dwell_filtered_2019_2020_list)
+
+years3 <- 2016:2018
+
+hi_dwell_filtered_2016_2018_list <- map(years3, ~read_and_filter_hi_dwell(.x, driver_dir, col_specs_old, tmks_permits)) %>%
+  set_names(years3)
+
+hi_dwell_filtered_2016_2018 <- do.call(rbind,hi_dwell_filtered_2016_2018_list)
+
+# change columns names
+
+hi_dwell_filtered_2010_2012_named <- hi_dwell_filtered_2010_2012 %>%
+    dplyr::select(
+    juris_id = jursi_id,
+    tmk,
+    tax_year = X3,
+    card = X4,
+    condo_dwell = X6,
+    full_baths = X15, #X12
+    half_baths = X16,
+    total_rooms = X21, # this might be X
+    bedrooms = X22, # this would instead be X19
+    year_built1 = X38, #this is different than Oahu. but should still be 18 away from bedrooms, 25 away from full baths
+    year_buit2 = X39
+    #mystery = X41,
+    #eff_year_mess = X42
+  ) %>% 
+  mutate(year_built = as.numeric(paste0(year_built1,year_buit2))) # this one is looking ok
+
+
+hi_dwell_filtered_2011_2015_named <- hi_dwell_filtered_2011_2015 %>%
+    dplyr::select(
+    juris_id = jursi_id,
+    tmk,
+    tax_year = X3,
+    card = X4,
+    condo_dwell = X6,
+    full_baths = X15, #X12
+    half_baths = X16,
+    total_rooms = X21, # this might be X
+    bedrooms = X22, # this would instead be X19
+    year_built1 = X38, #this is different than Oahu. but should still be 18 away from bedrooms, 25 away from full baths
+    year_buit2 = X39
+    #mystery = X41,
+    #eff_year_mess = X42
+  ) %>% 
+  mutate(year_built = as.numeric(paste0(year_built1,year_buit2)))
+
+  
+
+hi_dwell_filtered_2016_2018_named <- hi_dwell_filtered_2016_2018 %>%
+  dplyr::select(
+    juris_id = jursi_id,
+    tmk,
+    tax_year = X3,
+    card = X4,
+    condo_dwell = X6,
+    full_baths = X15, #X12
+    half_baths = X16,
+    total_rooms = X21, # this might be X
+    bedrooms = X22, # this would instead be X19
+    year_built = X37 #this is different than Oahu. but should still be 18 away from bedrooms, 25 away from full baths
+    #mystery = X41,
+    #eff_year_mess = X42
+  ) # this one is looing ok 
+
+
+
+hi_dwell_filtered_2019_2020_named <- hi_dwell_filtered_2019_2020 %>%
+  dplyr::select(
+    juris_id = jursi_id,
+    tmk,
+    tax_year = X3,
+    card = X4,
+    condo_dwell = X6,
+    full_baths = X15, #X12
+    half_baths = X16,
+    total_rooms = X21, # this might be X
+    bedrooms = X22, # this would instead be X19
+    year_built = X38 #this is different than Oahu. but should still be 18 away from bedrooms, 25 away from full baths
+    #mystery = X41,
+    #eff_year_mess = X42
+  ) 
+  
+
+
+
+```
+
+NOW weʻll work on correcting any mismatched columns, using the same thing as Oahu where I was identifying patterns of wrong and how to fix them.
+
+```{r}
+
+# first create, a flag where bathrooms > bedrooms 
+
+
+
+
+
+
+```
+
+
+
+
+

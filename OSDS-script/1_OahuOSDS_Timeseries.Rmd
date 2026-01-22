@@ -238,6 +238,10 @@ iws_permit_data <- read_csv(file.path(data_dir, "osds/shared-data/2009_Present_I
   
 # first, filter permit data for unique tmks in our dwelling data and count. 
 
+oahu_dwell_path <- file.path(driver_dir,"4_OSDS_N_Runoff/output-data/dwellings/oahu_dwell_clean_2015_2020.csv")
+
+oahu_dwells_cleanedup <- fread(file = oahu_dwell_path)
+
 oahu_dwells_cleanedup <- oahu_dwells_cleanedup %>% 
   mutate(full_taxid = substr(paste0(jurisid,taxid),1,9))
 
@@ -262,7 +266,7 @@ iws_oahu_permits_all <- iws_oahu_permits_anotherway %>%
 # collapse years - we'll come back to that. we jsut want to know which dwellings are represented in the permit database
 # 
 oahu_dwells_norepeats <- oahu_dwells_cleanedup %>% 
-  select(-tax_year, -condo_dwell, -card,-card_char) %>% 
+  select(-tax_year, -condo_dwell, -card) %>% 
   distinct() # so now, all thats left are duplicate tmks that have multiple buildings on it or buldings that changed. 
 
 iws_oahu_dwell_join <- inner_join(iws_oahu_permits_all, oahu_dwells_norepeats, by = "full_taxid")
@@ -281,6 +285,8 @@ dwell_nopermits <- oahu_dwells_cleanedup %>%
 
 dwell_with_permits <- oahu_dwells_cleanedup %>% 
   filter(full_taxid %in% iws_oahu_dwell_join$full_taxid) 
+
+dwell_with_permits_nobedrooms <- dwell_with_permits %>%  filter(bedrooms == 0)
 
 # joey got permit data from before. we'll have to use the old osds data layer to get at what was a cesspool prior to 2009
 st_write(dwell_with_permits,
@@ -799,6 +805,7 @@ cesspool_upgrade_tally <-  last_permit_persentinboth %>%
 
 ```
 
+
 RESULTS:
 
 Without counting our more difficult scenarios, we have recorded 813 upgrades!
@@ -807,6 +814,54 @@ Of those 813, 754 were cesspool upgrades!
 - we also have 24 possible new cesspool permits??
 - and 332 upgrades from a non-cesspool odsds
 - and 1 that might just be a duplicate
+
+
+## Review Results from Aimee's analysis
+
+```{r}
+
+# read in csvs from aimiee
+
+osds_new_since_otp_sewer <- read_csv(here("data/osds/aimee-reviewed/osds_new_since_otp_sewer_lat_check.csv")) # 255
+
+osds_new_since_otp_NOsewer <- read_csv(here("data/osds/aimee-reviewed/otp_osds_wo_perm_ug_sewer_lat_check.csv")) # 12593
+
+
+# make table showing of the ones that converted, which were they?
+
+type_year_convert_summ <- osds_new_since_otp_sewer %>% 
+  group_by(Year, osds_class_1,dwell_flag) %>% 
+  summarize(
+    total = n()
+  ) %>% 
+  mutate(osds_class_1 = as.character(osds_class_1))
+
+pl1 <- ggplot(type_year_convert_summ, aes(x = Year, y = total, group = osds_class_1))+
+  geom_bar(stat = "identity", position = "stack", aes(fill = osds_class_1))+
+  theme_bw()+
+  facet_wrap(~dwell_flag)
+
+pl1
+
+
+
+```
+
+
+# Compile Final Tables for Data base
+
+Re-add dwelling data Oahu Bob data and re-do change analysis
+
+```{r}
+
+oahu_dwellings_inotpbob <- oahu_dwells_cleanedup %>% 
+  filter(full_taxid %in% otp_bob$tmk_9)
+
+oahu_dwellings_inotpbob_0bedrooms <- oahu_dwellings_inotpbob %>% 
+  filter(bedrooms == 0) # 95
+
+
+```
 
 
 
