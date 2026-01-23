@@ -704,3 +704,17 @@ Of the upgrades (N = 636):
 ## Combine All Together
 
 The key here is that once we combine old and new data, I create an authoritative list. 
+
+For the "tricky" and hard cases, I can use the additive encoding to mesh them in with the rest of the dataset. The key to how we treat these are 1) summing bedrooms to the TMK level, 3) getting the "mode" of bedrooms for multi-building properties and 2) summing osds by class. If the classes are all the same, then we treat it the same in our effluent equation which is cool. But if they are different, we'll assign the mode to each class for our effluent calculation. 
+
+The datasets that need to come together here are:
+
+- New permits not in OTP + related bedroom info
+- New permits that ARE in OTP + releted bedroom info
+- OTP not in new permits + related bedroom info. 
+
+The last step will be to get the authoritative list of TMKS from each of these, and then find the correct spatial point (below. )
+
+
+
+
