@@ -562,7 +562,7 @@ otp_bob_tmk_NOTinOBOP <- otp_bob_cols %>%
 write_csv(otp_bob_tmk_NOTinOBOP,
           file.path(driver_dir,"4_OSDS_N_Runoff/output-data/otp_osds_wo_permitupgrade_mauinui.csv")) 
 
-# which are totally new, ie not updates?
+# which of the new permits are TOTALLY new, ie not updates to existing?
 
 onebuilding_onepermit_NEW_since2010 <- onebuilding_onepermit %>% 
   filter(tmk %!in% otp_bob_filtered_byOBOP$tmk_9) # 528 
@@ -609,7 +609,7 @@ dups_otp_fiteredOBOP <- otp_bob_filtered_byOBOP_wide %>% mutate(duplicated = dup
 otp_bob_morethan1osds <- otp_bob_filtered_byOBOP_wide %>% 
   filter(ttl_osds_2010 > 1) #318 ~ 30% of total 
 
-# I realized that the long version is fine for our comparison of "last year updated"
+# I realized that the long version is fine for our comparison of "last year updated" - here I m just using the wide version to do the additive encoding
 otp_bob_filtered_byOBOP_wideENC <- otp_bob_filtered_byOBOP %>% 
   select(-class) %>% 
   pivot_longer(cols = starts_with("class"), names_to = "class", values_to = "quantity") %>% 
@@ -624,7 +624,7 @@ otp_bob_filtered_byOBOP_wideENC <- otp_bob_filtered_byOBOP %>%
   pivot_wider(id_cols = c("permit_id","tmk","ttl_osds_2010"), names_from = c("year_issued","class"), values_from = c("osds_class_otp")) %>% 
     mutate(combo_code = rowSums(across(starts_with("2010")), na.rm = TRUE))
 
-# now make this long again, now that weʻve collapsed the multi-class info into one number. NOTE: in this version we loose quantity!!
+# now make this long again by just removing identifier, now that weʻve collapsed the multi-class info into one number. NOTE: in this version we loose quantity!!
 
 otp_bob_filtered_byOBOP_longENC <- otp_bob_filtered_byOBOP_wideENC %>%
   select(-starts_with("2010"), -permit_id)
@@ -720,4 +720,18 @@ Of the upgrades (N = 632):
 - an additional 42 are upgrades that occurred on tmks with many osds, one of which is a cesspool
 - 4 are new cesspool permits since OTP
 
-##
+## Combine All Together
+
+The key here is that once we combine old and new data, I create an authoritative list. 
+
+
+## Spatialize
+
+```{r}
+
+
+
+
+
+```
+
