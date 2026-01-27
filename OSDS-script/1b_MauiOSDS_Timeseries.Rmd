@@ -706,7 +706,7 @@ cesspool_upgrade_tally <-  last_permit_persentinboth %>%
   summarize(
     total_n = n()
   )
-
+mad
 
 ```
 

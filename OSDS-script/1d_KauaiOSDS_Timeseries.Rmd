@@ -3,6 +3,9 @@ title: "Kauai OSDS Timeseries"
 author: "Madeline Berger"
 date: "2026-01-14"
 output: html_document
+editor_options: 
+  markdown: 
+    wrap: 72
 ---
 
 ```{r setup, include=FALSE}
@@ -17,18 +20,19 @@ source(here("workflow/setup.R"))
 
 ```
 
-## New Data: clean up and join 
+## New Data: clean up and join
 
 ### Step 1: Clean Up Dwell Data
 
-The Kauai data comes to us pre-parsed, which is great. Here we will just generate the same summary tables as we did for Oahu. We will have to read in each excel file here and do some cleaning. 
+The Kauai data comes to us pre-parsed, which is great. Here we will just
+generate the same summary tables as we did for Oahu. We will have to
+read in each excel file here and do some cleaning.
 
 The data was sent as one giant CSV.
 
-- first I'll rename the columns
-- select the ones we need for the "report"
-- run the function
-
+-   first I'll rename the columns
+-   select the ones we need for the "report"
+-   run the function
 
 ```{r dwell clean}
 
@@ -42,8 +46,6 @@ kauai_raw_dwell <- fread(file.path(driver_dir,"4_OSDS_N_Runoff/large-input-data/
 kauai_clean_names <- kauai_raw_dwell %>% clean_names()
 
 ```
-
-
 
 Create summary report - same function adjusted for column names
 
@@ -133,13 +135,12 @@ kaui_clean_names_coll <- kauai_clean_names %>%
 
 ```
 
+### Step 2: Bring in IWS Permit data
 
-### Step 2: Bring in IWS Permit data 
-
-- This is the "heart" of the database
-- Execute Join
-- Develop QA QC report 2 on which drop out and therefore likely represent commercial parcels. 
-
+-   This is the "heart" of the database
+-   Execute Join
+-   Develop QA QC report 2 on which drop out and therefore likely
+    represent commercial parcels.
 
 ```{r}
 
@@ -178,19 +179,17 @@ write_csv(iws_kauai_NOdwell,
 
 ```
 
-
-Results so far:
-- There are 2406 permits issued for Kauai in this dataset
-- There are 2115 with dwell information, representing 1741 TMKS 
-- There are 291 without Dwell information 
-- Condos, particularly low rise and high rise have increased a lot in Maui over the past 10 years
+Results so far: - There are 2406 permits issued for Kauai in this
+dataset - There are 2115 with dwell information, representing 1741
+TMKS - There are 291 without Dwell information
 
 ### Step 2b: Identifying Upgrade Scenarios
 
-Here we will work to identify easy, tricky and hard scenarios. The steps are as follows:
-1. Create a flag that flags if a TMK is repeated in the same year or different year
+Here we will work to identify easy, tricky and hard scenarios. The steps
+are as follows: 
+1. Create a flag that flags if a TMK is repeated in the
+same year or different year 
 2. Count up scenarios and save
-
 
 ```{r}
 
@@ -226,7 +225,7 @@ check_dups_again <- filter(iws_kauai_permits_flag, is_duplicate == TRUE)
 
 # count up the different scenarios
 
-iws_duplicate_scenarios_kauai <- iws_kauai_permits_flag %>% 
+iws_duplicate_scenarios_hi <- iws_hi_permits_flag %>% 
   group_by(osds_flag) %>% 
   summarize(
     total_tmks = length(unique(full_taxid))
@@ -234,32 +233,35 @@ iws_duplicate_scenarios_kauai <- iws_kauai_permits_flag %>%
 
 # save to qaqc
 
-write_csv(iws_duplicate_scenarios_kauai,
-         file.path(driver_dir,"4_OSDS_N_Runoff/output-data/qaqc/kauai_iwspermits_scenario_summary.csv"))
+write_csv(iws_duplicate_scenarios_hi,
+         file.path(driver_dir,"4_OSDS_N_Runoff/output-data/qaqc/hi_iwspermits_scenario_summary.csv"))
 
 
 
 
 ```
 
+Results: - 805 of the PERMITS issued during this time frame were issued
+to the same TMK, which represents 252 TMKs - 82 indicate multiple
+permits for the same tmk for the same year - 170 indicate multiple
+permits for different years
 
-Results: 
-- 805 of the PERMITS issued during this time frame were issued to the same TMK, which represents 252 tnks
-  - 82 indicate multiple permits for the same tmk for the same year
-  - 170 indicate multiple permits for different years
-  - The rest are for unique buildings or addresses on the same tmk
-- 1601 are one building, one permit, one year
+The rest are for unique buildings or
+addresses on the same tmk - 1601 are one building, one permit, one year
 
 ### Step 3: Assign Class to Permits
 
-The assignment of class is based on a previously determined scheme by Whittier and El Kadi (2014). The scheme is as follows:
+The assignment of class is based on a previously determined scheme by
+Whittier and El Kadi (2014). The scheme is as follows:
 
-Class I = any system receiving soil treatment, with disposal types as bed, trench, and infiltration chambers
-Class II = Septic system discharging into seepage pit
-Class III = Effluent received primary treatment only 
-Class IV = Aerobic units discharging into a seepage pit. The effluent receives primary and secondary treatment. 
+Class I = Any system receiving soil treatment, with disposal types as
+bed, trench, and infiltration chambers 
+Class II = Septic system discharging into seepage pit. This effluent only gets primary treatment. 
+Class III = Aerobic units discharging into a seepage pit. The effluent received primary and secondary treatment. 
+Class IV = Cesspools, no treatment
 
-Class V = multiple with at least one cesspool. So note this will only apply to those that weʻve flagged above that may have multiple
+Class V = multiple with at least one cesspool. So note this will only
+apply to those that weʻve flagged above that may have multiple. Not using this one for now. 
 
 ```{r}
 
@@ -312,7 +314,9 @@ iws_kauai_permits_withclass <- iws_kauai_permits_flag %>%
 
 ### Step 4: Count addresses and permits by TMK & find min and max years
 
-Parallel to the class assignment, here I examine the address column to try and figure out if we can ID multiple building scenarios just from the permit data. 
+Parallel to the class assignment, here I examine the address column to
+try and figure out if we can ID multiple building scenarios just from
+the permit data.
 
 ```{r}
 
@@ -363,14 +367,14 @@ write_csv(scenario_summary,
 
 ```
 
-**Results** from this tell us that:
-- 205 of tmks that applied for permits in this time period have multiple buildings. 
-- 1601 tmks are a one building, one permit scenario. Easy!
-- 20 are one building, multiple permits, multiple years. This suggests a replacement or upgrade. Also easyish
-- 27 are one building, multiple permits, all one year. 
-- 55 are multiple permits for multiple buildings and one year. Easy if 1) all permits the same class and 2) building # = permit number. 
-- 150 are multiple buildings, multiple permits, and multiple years. 
-
+**Results** from this tell us that: - 205 of tmks that applied for
+permits in this time period have multiple buildings. - 1601 tmks are a
+one building, one permit scenario. Easy! - 20 are one building, multiple
+permits, multiple years. This suggests a replacement or upgrade. Also
+easyish - 27 are one building, multiple permits, all one year. - 55 are
+multiple permits for multiple buildings and one year. Easy if 1) all
+permits the same class and 2) building \# = permit number. - 150 are
+multiple buildings, multiple permits, and multiple years.
 
 ```{r}
 
@@ -416,6 +420,7 @@ iws_kauai_permits_hardscenario <- iws_kauai_permits_withclass %>%
 ```
 
 How many of the hard tmks are non dwellings?
+
 ```{r}
 
 
@@ -432,22 +437,27 @@ length(unique(hard_tmks$tmk)) #205
 
 ```
 
-## Compare to Past Datasets to Complete the Time Series 
+## Compare to Past Datasets to Complete the Time Series
 
-We have to bring in the past OSDS dataset to have a record of what each tmk was bedroom wise and class wise prior to 2009 (which is when our permit data starts). Without it, we can only track changes and upgrades within the 2009 - 2020. Weʻll add this as a column. Once we do this, we can generate cesspool upgrade list. 
+We have to bring in the past OSDS dataset to have a record of what each
+tmk was bedroom wise and class wise prior to 2009 (which is when our
+permit data starts). Without it, we can only track changes and upgrades
+within the 2009 - 2020. Weʻll add this as a column. Once we do this, we
+can generate cesspool upgrade list.
 
-There are two main categories of comparison from Step 2;
-- Easy situations where we have one building, one permit per tmk
-- More complex ones.
-
+There are two main categories of comparison from Step 2; - Easy
+situations where we have one building, one permit per tmk - More complex
+ones.
 
 ### A) Compare to OTP (2010 timestamp)
 
-Let's start with the easy list. We'll read in the old OSDS dataset and assume that what ever is recorded for that tmk in there is what it was before 2010. If our new dataset has something different, we know its changed. 
-Important Assumption from Julia's work: if a location goes from septic, or better, to CESSPOOL is probably wrong? 
+Let's start with the easy list. We'll read in the old OSDS dataset and
+assume that what ever is recorded for that tmk in there is what it was
+before 2010. If our new dataset has something different, we know its
+changed. Important Assumption from Julia's work: if a location goes from
+septic, or better, to CESSPOOL is probably wrong?
 
-
-First read in most recently available data for Kauai and Explore: 
+First read in most recently available data for Kauai and Explore:
 
 ```{r}
 
@@ -455,27 +465,37 @@ kauai_otp <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/large-input-data/OSD
 
 ```
 
-Like Maui, for Kauai the data I downloaded from HI GIS is a bit different than OAHU because it is in wide format, with a column for each class, and the value in the column indicating the quantity of that class. there is also a total quantity.
+Like Maui, for Kauai the data I downloaded from HI GIS is a bit
+different than OAHU because it is in wide format, with a column for each
+class, and the value in the column indicating the quantity of that
+class. there is also a total quantity.
 
 We only have classes 1 - 4 in this data.
 
+From the metadata, this represents:
 
-From the metadata, this represents: 
+We only have classes 1 - 4 in this data. From the metadata, this
+represents:
 
+-   CLASS_I: Class I OSDS are those systems where the effluent is
+    subjected to soil treatment
+-   CLASS_II: Class II OSDS are septic systems discharging to a seepage
+    pit.\
+-   CLASS_III: Class III OSDS are aerobic systems discharging to a
+    seepage pit.
+-   CLASS_IV: Class IV OSDS are c cesspools.\
+-   EFFLUENT: The total effluent flux in million gallons per day
+    discharged within the TMK parcel.
 
-We only have classes 1 - 4 in this data. From the metadata, this represents: 
-
-- CLASS_I: Class I OSDS are those systems where the effluent is subjected to soil treatment 
-- CLASS_II: Class II OSDS are septic systems discharging to a seepage pit.  
-- CLASS_III: Class III OSDS are aerobic systems discharging to a seepage pit.
-- CLASS_IV: Class IV OSDS are c  cesspools.  
-- EFFLUENT: The total effluent flux in million gallons per day discharged within the TMK parcel. 
-
-
-This makes it tricky to match it up to our "one building one permit" data. So what Iʻm going to do, which isnt a perfect solution but will help us sort out changes for now, is use additive encoding, that creates unique codes for each class AND each combination of class. The rule is for category n, use 2^(n-1) for the code. Therefore the class column becomes: 
+This makes it tricky to match it up to our "one building one permit"
+data. So what Iʻm going to do, which isnt a perfect solution but will
+help us sort out changes for now, is use additive encoding, that creates
+unique codes for each class AND each combination of class. The rule is
+for category n, use 2\^(n-1) for the code. Therefore the class column
+becomes:
 
 | Combination                           | Sum |
-| ------------------------------------- | --- |
+|---------------------------------------|-----|
 | Class 1                               | 1   |
 | Class 2                               | 2   |
 | Class 1 + Class 2                     | 3   |
@@ -491,7 +511,6 @@ This makes it tricky to match it up to our "one building one permit" data. So wh
 | Class 1 + Class 3 + Class 4           | 13  |
 | Class 2 + Class 3 + Class 4           | 14  |
 | Class 1 + Class 2 + Class 3 + Class 4 | 15  |
-
 
 ```{r}
 
@@ -661,12 +680,17 @@ write_csv(last_permit_persentinboth,
 
 ```
 
+So there are a number here where there are more than one cesspool - we
+may want to make an assumption that if there is one new permit for
+something better than a cesspool (ie a septic tank), its replacing both
+cesspools? OR, again another place for sensitivity analysis.
 
-So there are a number here where there are more than one cesspool - we may want to make an assumption that if there is one new permit for something better than a cesspool (ie a septic tank), its replacing both cesspools? OR, again another place for sensitivity analysis. 
+Also an important assumption: if there is a more recent application for
+a place with cesspools, would that be for an ADDITIONAL cesspool or to
+re-build one of them? not as important for effluent calculation, but
+important for Chris and Aimee's work.
 
-Also an important assumption: if there is a more recent application for a place with cesspools, would that be for an ADDITIONAL cesspool or to re-build one of them? not as important for effluent calculation, but important for Chris and Aimee's work. 
-
-Last step! Tally up the changes and record as results below. 
+Last step! Tally up the changes and record as results below.
 
 ```{r}
 
@@ -685,36 +709,41 @@ cesspool_upgrade_tally <-  last_permit_persentinboth %>%
 
 ```
 
-
 RESULTS:
 
-WITHOUT COUNTING our more difficult scenarios: 
-we have recorded 636 upgrades
-123 possible additions or replacements of same time
-280 where a change occurred on a tmk with many existing osds. 
+WITHOUT COUNTING our more difficult scenarios: we have recorded 636
+upgrades 123 possible additions or replacements of same time 280 where a
+change occurred on a tmk with many existing osds.
 
-We also have 97 data overlaps, which I'll make sure aren't different, and then delete duplicates.
-There are 8 where we record a "last class" that is a class lower than OTP. Given the number of multiunits in Kauai, I'm not super surprised but we should also double check these. 
+We also have 97 data overlaps, which I'll make sure aren't different,
+and then delete duplicates. There are 8 where we record a "last class"
+that is a class lower than OTP. Given the number of multiunits in Kauai,
+I'm not super surprised but we should also double check these.
 
-Of the upgrades (N = 636): 
-- 618 are cesspool upgrades
-- an additional 265 are upgrades that occurred on tmks with many osds, one of which is a cesspool
-- 12 are new cesspool permits since OTP
+Of the upgrades (N = 636): - 618 are cesspool upgrades - an additional
+265 are upgrades that occurred on tmks with many osds, one of which is a
+cesspool - 12 are new cesspool permits since OTP
 
 ## Combine All Together
 
-The key here is that once we combine old and new data, I create an authoritative list. 
+The key here is that once we combine old and new data, I create an
+authoritative list.
 
-For the "tricky" and hard cases, I can use the additive encoding to mesh them in with the rest of the dataset. The key to how we treat these are 1) summing bedrooms to the TMK level, 3) getting the "mode" of bedrooms for multi-building properties and 2) summing osds by class. If the classes are all the same, then we treat it the same in our effluent equation which is cool. But if they are different, we'll assign the mode to each class for our effluent calculation. 
+For the "tricky" and hard cases, I can use the additive encoding to mesh
+them in with the rest of the dataset. The key to how we treat these are
+1) summing bedrooms to the TMK level, 3) getting the "mode" of bedrooms
+for multi-building properties and 2) summing osds by class. If the
+classes are all the same, then we treat it the same in our effluent
+equation which is cool. But if they are different, we'll assign the mode
+to each class for our effluent calculation.
 
 The datasets that need to come together here are:
 
-- New permits not in OTP + related bedroom info
-- New permits that ARE in OTP + releted bedroom info
-- OTP not in new permits + related bedroom info. 
+-   New permits not in OTP + related bedroom info
+-   New permits that ARE in OTP + releted bedroom info
+-   OTP not in new permits + related bedroom info.
 
-The last step will be to get the authoritative list of TMKS from each of these, and then find the correct spatial point (below. )
+The last step will be to get the authoritative list of TMKS from each of
+these, and then find the correct spatial point (below )
 
-
-
-
+## Spatialize

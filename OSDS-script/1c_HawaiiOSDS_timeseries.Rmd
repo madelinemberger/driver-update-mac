@@ -29,7 +29,10 @@ This report should tell us:
 - Summary of bedrooms and bathrooms per year?
 
 
-This might get long - the Oahu data was quite messy. Will just start with 2010
+This might get long - the Hawaii dwell data is quite messy. A few notes from the data sent by the county: 
+
+2010 - 2012 data did not come with extract formula sheets with them
+
 
 ```{r}
 
@@ -126,13 +129,126 @@ hi_dwell_2016 <- read_fwf(file.path(driver_dir,"4_OSDS_N_Runoff/input-data/Dwell
                           col_types = cols(.default = col_character())) %>%
   mutate(across(everything(), ~trimws(.))) # this one still ok
 
-# use this code to check others
+# check later years
+
+hi_dwell_2021 <- read_fwf(file.path(driver_dir,"4_OSDS_N_Runoff/input-data/Dwelling_Data_Raw/Hawaii_DwellRaw_12182025/2021/DWELDAT.TXT"),
+                          col_positions = col_specs_2022,
+                          na = c("", "NA"),
+                          col_types = cols(.default = col_character())) %>%
+  mutate(across(everything(), ~trimws(.)))
 
 
 
 
 
 ```
+
+I realized that specification docs were included for all years after 2012. I looked at them all side by side and there appear to be two distinct versions. The first (A) applies only to 2013, and 2019 - 2023. The second one (B) applies to 2014 - 2018.
+
+They are actually identical until the year built column, which makes sense because when I was applying the ones above to different groups of years, the column that clued me into if it was working or not was year built. 
+
+In A, yrbuilt is 434 to 437
+In B, yrblt is 425 to 429
+
+```{r}
+
+library(readr)
+
+colspec_A <- fwf_positions(
+  start = c(
+    1, 2, 15, 20, 24, 44, 48, 52, 72, 92,
+    112, 132, 152, 154,
+    179, 186, 193, 199, 201, 202,
+    206, 211, 216, 218,
+    238, 239, 259,
+    279, 299, 319,
+    343, 355, 357, 361, 364,
+    384, 404,
+    434, 438, 443, 444, 448,
+    470, 479, 490, 495, 503, 510
+  ),
+  end = c(
+    1, 14, 19, 23, 43, 47, 51, 71, 91, 111,
+    131, 151, 153, 178,
+    185, 192, 198, 200, 201, 205,
+    210, 215, 217, 237,
+    238, 258, 278,
+    298, 318, 342,
+    354, 356, 360, 363, 383,
+    403, 433,
+    437, 442, 443, 447, 469,
+    478, 489, 494, 502, 509, 999
+  ),
+  col_names = c(
+    "JUR","PARID","TAXYR","CARD","USER20","VALMETH","STORIES",
+    "USER6","USER7","USER8","USER4","USER5","STYLE","USER9",
+    "FIXBATH","FIXHALF","FIXADDL","FIXTOT","HEAT","ATTIC",
+    "RMTOT","RMBED","RMFAM","USER10",
+    "BSMT","USER11","USER12",
+    "USER13","USER14","USER15",
+    "RECROMAREA","CONDOLVL","CONDOTYP","CONDOVW","USER1",
+    "USER2","USER3",
+    "YRBLT","EFFYR","COND","GRADE","USER16",
+    "USERFACT","ECNDEP","PCTCOMPLETE","FLR1AREA","ADDNAREA","SFLA"
+  )
+)
+
+
+
+colspec_B <- fwf_positions(
+  start = c(
+    1, 2, 15, 20, 24, 44, 48, 52, 72, 92,
+    112, 132, 152, 154,
+    179, 186, 193, 199, 201, 202,
+    206, 211, 216, 218,
+    238, 239, 259,
+    279, 299, 319,
+    343, 355, 357, 361, 364,
+    384, 404,
+    425, 430, 434, 435, 439,
+    461, 470, 481, 486, 494, 501
+  ),
+  end = c(
+    1, 14, 19, 23, 43, 47, 51, 71, 91, 111,
+    131, 151, 153, 178,
+    185, 192, 198, 200, 201, 205,
+    210, 215, 217, 237,
+    238, 258, 278,
+    298, 318, 342,
+    354, 356, 360, 363, 383,
+    403, 424,
+    429, 433, 434, 438, 460,
+    469, 480, 485, 493, 500, 999
+  ),
+  col_names = c(
+    "JUR","PARID","TAXYR","CARD","USER20","VALMETH","STORIES",
+    "USER6","USER7","USER8","USER4","USER5","STYLE","USER9",
+    "FIXBATH","FIXHALF","FIXADDL","FIXTOT","HEAT","ATTIC",
+    "RMTOT","RMBED","RMFAM","USER10",
+    "BSMT","USER11","USER12",
+    "USER13","USER14","USER15",
+    "RECROMAREA","CONDOLVL","CONDOTYP","CONDOVW","USER1",
+    "USER20_ALT","USER3",
+    "YRBLT","EFFYR","COND","GRADE","USER16",
+    "USERFACT","ECNDEP","PCTCOMPLETE","FLR1AREA","ADDNAREA","SFLA"
+  )
+)
+
+
+# try on one year
+
+hi_dwell_2013 <- read_fwf(file.path(driver_dir,"4_OSDS_N_Runoff/large-input-data/Dwelling_Data_Raw/Hawaii_DwellRaw_12182025/2013/DWELDAT.TXT"),
+                          col_positions = colspec_A,
+                          na = c("", "NA"),
+                          col_types = cols(.default = col_character())) %>%
+  mutate(across(everything(), ~trimws(.)))
+
+#YAY
+
+
+```
+
+
 
 For Hawaii, Iʻm going to try a slightly different approach where I filter before worrying about the column parsing. Just to make things lighter 
 
@@ -142,13 +258,14 @@ For Hawaii, Iʻm going to try a slightly different approach where I filter befor
 library(readr)
 library(dplyr)
 library(purrr)
+library(janitor)
 
 # read in HI iws permits
 
 iws_permit_data <- read_csv(file.path(data_dir, "osds/shared-data/2009_Present_IWSList_Permits.csv"))
 
 
-# filter out just the permits in maui, and create permit ID tracker
+# filter out just the permits in Hawaii, and create permit ID tracker
 
 iws_hi_permits <- iws_permit_data %>% 
   mutate(tmk_char = as.character(TMK)) %>% 
@@ -161,7 +278,7 @@ tmks_permits <- iws_hi_permits$full_taxid
 # function to go get and read in each text file, parse, and filter
 read_and_filter_hi_dwell <- function(year, driver_dir, col_specs, tmks_permits) {
   file_path <- file.path(driver_dir,
-                         "4_OSDS_N_Runoff/input-data/Dwelling_Data_Raw/Hawaii_DwellRaw_12182025",
+                         "4_OSDS_N_Runoff/large-input-data/Dwelling_Data_Raw/Hawaii_DwellRaw_12182025",
                          as.character(year),
                          "DWELDAT.TXT")
   
@@ -181,129 +298,356 @@ read_and_filter_hi_dwell <- function(year, driver_dir, col_specs, tmks_permits) 
     filter(tmk_9 %in% tmks_permits)
 }
 
-years0 <- 2010:2012
+# next, apply function for years that correspond to each Spec 
 
-hi_dwell_filtered_2010_2012_list <- map(years0, ~read_and_filter_hi_dwell(.x, driver_dir, col_specs_old, tmks_permits)) %>%
-  set_names(years0)
+yearsA <- c(2019:2023)
 
-hi_dwell_filtered_2010_2012 <- do.call(rbind,hi_dwell_filtered_2010_2012_list)
-
-years1 <- 2013:2015
-
-hi_dwell_filtered_2013_2015_list <- map(years, ~read_and_filter_hi_dwell(.x, driver_dir, col_specs_2015, tmks_permits)) %>%
-  set_names(years1)
-
-hi_dwell_filtered_2013_2015 <- do.call(rbind,hi_dwell_filtered_2011_2015_list)
+yearsA_list <- map(yearsA, ~read_and_filter_hi_dwell(.x, driver_dir, colspec_A, tmks_permits))
+yearsA_df <- do.call(rbind, yearsA_list)
 
 
-years2 <- 2019:2020
+yearsB <- c(2013:2018)
 
-hi_dwell_filtered_2019_2020_list <- map(years2, ~read_and_filter_hi_dwell(.x, driver_dir, col_specs_old, tmks_permits)) %>%
-  set_names(years2)
-
-hi_dwell_filtered_2019_2020 <- do.call(rbind,hi_dwell_filtered_2019_2020_list)
-
-years3 <- 2016:2018
-
-hi_dwell_filtered_2016_2018_list <- map(years3, ~read_and_filter_hi_dwell(.x, driver_dir, col_specs_old, tmks_permits)) %>%
-  set_names(years3)
-
-hi_dwell_filtered_2016_2018 <- do.call(rbind,hi_dwell_filtered_2016_2018_list)
-
-# change columns names
-
-hi_dwell_filtered_2010_2012_named <- hi_dwell_filtered_2010_2012 %>%
-    dplyr::select(
-    juris_id = jursi_id,
-    tmk,
-    tax_year = X3,
-    card = X4,
-    condo_dwell = X6,
-    full_baths = X15, #X12
-    half_baths = X16,
-    total_rooms = X21, # this might be X
-    bedrooms = X22, # this would instead be X19
-    year_built1 = X38, #this is different than Oahu. but should still be 18 away from bedrooms, 25 away from full baths
-    year_buit2 = X39
-    #mystery = X41,
-    #eff_year_mess = X42
-  ) %>% 
-  mutate(year_built = as.numeric(paste0(year_built1,year_buit2))) # this one is looking ok
+yearsB_list <- map(yearsB, ~read_and_filter_hi_dwell(.x, driver_dir, colspec_B, tmks_permits))
+yearsB_df <- do.call(rbind, yearsB_list)
 
 
-hi_dwell_filtered_2011_2015_named <- hi_dwell_filtered_2011_2015 %>%
-    dplyr::select(
-    juris_id = jursi_id,
-    tmk,
-    tax_year = X3,
-    card = X4,
-    condo_dwell = X6,
-    full_baths = X15, #X12
-    half_baths = X16,
-    total_rooms = X21, # this might be X
-    bedrooms = X22, # this would instead be X19
-    year_built1 = X38, #this is different than Oahu. but should still be 18 away from bedrooms, 25 away from full baths
-    year_buit2 = X39
-    #mystery = X41,
-    #eff_year_mess = X42
-  ) %>% 
-  mutate(year_built = as.numeric(paste0(year_built1,year_buit2)))
+# experiment: try b on A years? this seems to work better
 
+yearsAbyB_list <- map(yearsA, ~read_and_filter_hi_dwell(.x, driver_dir, colspec_B, tmks_permits))
+yearsAbyB_df <- do.call(rbind, yearsAbyB_list) 
+
+# last bit: try both col spec versions on 2010 - 2012. 
+yearsC <- (2010:2012)
+yearsCbyA_list <- map(yearsC, ~read_and_filter_hi_dwell(.x, driver_dir, colspec_A, tmks_permits))
+yearsCbyA_df <- do.call(rbind, yearsCbyA_list)
+
+yearsCbyB_list <- map(yearsC, ~read_and_filter_hi_dwell(.x, driver_dir, colspec_B, tmks_permits))
+yearsCbyB_df <- do.call(rbind, yearsCbyB_list)
+
+# weirdly, while A was close in column it was split, while B was not split just behind. But I think A i feel safer about
+
+dwell_2010_2012 <- yearsCbyA_df %>% 
+  mutate(year_built_fixed = paste0(YRBLT,substr(EFFYR,1,1))) %>% #paste together year and the first character of eff year
+  mutate(effective_year_fixed = paste0(substr(EFFYR,2,nchar(EFFYR)), substr(COND,1,1))) %>% 
+  clean_names() %>% 
+  select(jursi_id,
+         tmk,
+         tmk_9,
+         taxyr,
+         card,
+         fixbath,
+         fixhalf,
+         rmtot,
+         rmbed,
+         yrblt = year_built_fixed,
+         effyr = effective_year_fixed)
   
 
-hi_dwell_filtered_2016_2018_named <- hi_dwell_filtered_2016_2018 %>%
-  dplyr::select(
-    juris_id = jursi_id,
-    tmk,
-    tax_year = X3,
-    card = X4,
-    condo_dwell = X6,
-    full_baths = X15, #X12
-    half_baths = X16,
-    total_rooms = X21, # this might be X
-    bedrooms = X22, # this would instead be X19
-    year_built = X37 #this is different than Oahu. but should still be 18 away from bedrooms, 25 away from full baths
-    #mystery = X41,
-    #eff_year_mess = X42
-  ) # this one is looing ok 
+
+# select colums needed and bind all together
+
+dwell_2013_2023 <- rbind(yearsAbyB_df, yearsB_df) %>% 
+  clean_names() %>% 
+  select(jursi_id,
+         tmk,
+         tmk_9,
+         taxyr,
+         card,
+         fixbath,
+         fixhalf,
+         rmtot,
+         rmbed,
+         yrblt,
+         effyr)
+
+# bind all together!
+
+
+allyears_hi_dwell <- rbind(dwell_2010_2012, dwell_2013_2023) %>% 
+  rename(full_taxid = tmk_9)
 
 
 
-hi_dwell_filtered_2019_2020_named <- hi_dwell_filtered_2019_2020 %>%
-  dplyr::select(
-    juris_id = jursi_id,
-    tmk,
-    tax_year = X3,
-    card = X4,
-    condo_dwell = X6,
-    full_baths = X15, #X12
-    half_baths = X16,
-    total_rooms = X21, # this might be X
-    bedrooms = X22, # this would instead be X19
-    year_built = X38 #this is different than Oahu. but should still be 18 away from bedrooms, 25 away from full baths
-    #mystery = X41,
-    #eff_year_mess = X42
-  ) 
-  
+# save
 
+write_csv(allyears_hi_dwell, 
+          file.path(driver_dir,"4_OSDS_N_Runoff/output-data/dwellings/hi_dwell_clean_2010_2023_permitTMKonly.csv"))
 
 
 ```
 
-NOW weʻll work on correcting any mismatched columns, using the same thing as Oahu where I was identifying patterns of wrong and how to fix them.
+Ok so it looks like col Spec B has worked really well for all years. Who knew! Iʻm going to quickly check for any mistakes below, then we can move on.
 
 ```{r}
 
-# first create, a flag where bathrooms > bedrooms 
+# create new column with length of yearbuilt, and print unique instances
+
+allyears_dwell$yearblt_length <- nchar(allyears_dwell$YRBLT)
+
+unique(allyears_dwell$yearblt_length) # 4 and NA
+
+# look at the NAS
+
+allyears_dwell_yrblt_Na <- allyears_dwell %>% filter(is.na(yearblt_length))
+
+# which years does this apply to?
+
+unique(allyears_dwell_yrblt_Na$TAXYR) # since 2019
+
+```
+
+Hmm ok so I think I actually did not solve the parsing problem, and 2019 - 2023 did not parse correctly. Above, I went back and used col spec A on 2019 - 2023, and B for the rest. 
+
+### Step 2: Bring in IWS data
+
+Here we join dwell data to the permit information for the ones that correspond to dwellings, and save the list of non-dwell TMKS.
+
+```{r}
+
+# read in HI iws permits
+
+iws_permit_data <- read_csv(file.path(data_dir, "osds/shared-data/2009_Present_IWSList_Permits.csv"))
+
+
+# filter out just the permits in Hawaii, and create permit ID tracker
+
+iws_hi_permits <- iws_permit_data %>% 
+  mutate(tmk_char = as.character(TMK)) %>% 
+  filter(str_starts(tmk_char,"3")) %>% 
+  rename(full_taxid = tmk_char) %>%  
+  rowid_to_column("permit_id") # 7347
+
+tmks_permits <- iws_hi_permits$full_taxid
+
+# execute join to see which tmks have dwell data
+
+iws_hi_dwell_join <- inner_join(iws_hi_permits, allyears_hi_dwell, by = "full_taxid") %>% 
+  distinct() # 69630 rows, 6011 TMKS
+# also filter, this should have fewer rows but the same number of tmks
+
+iws_hi_dwell_join_norepeats <- iws_hi_permits %>% 
+  filter(full_taxid %in% allyears_hi_dwell$full_taxid) #6242 rows, 6011 tmks YAY
+
+# now identify permits that donʻt have dwell data, and save 
+
+iws_hi_NOdwell <- iws_hi_permits %>% 
+  filter(full_taxid %!in% iws_hi_dwell_join$full_taxid) # 1105
+
+write_csv(iws_hi_NOdwell,
+         file.path(driver_dir,"4_OSDS_N_Runoff/output-data/qaqc/hi_iwspermits_nodwellinginfo.csv"))
+
+```
+
+**Results so Far**:
+- There were 7347 permits issued for HI island over the past 10 years
+- 6242 have dwelling information, and this represents 6011 tmks
+- 1105 do not have dwelling information
+
+### Step 2b: Identifying Upgrade Scenarios
+
+Here we will work to identify easy, tricky and hard scenarios. The steps
+are as follows: 
+1. Create a flag that flags if a TMK is repeated in the
+same year or different year 
+2. Count up scenarios and save
+
+```{r}
+
+
+# working with just the permit data, analyze duplicates for 1 permit issued to same place, and which years
+
+iws_hi_permits$is_duplicate <- duplicated(iws_hi_permits$TMK) | duplicated(iws_hi_permits$TMK, fromLast = TRUE)
+  
+iws_hi_permits_dups <- filter(iws_hi_permits, is_duplicate == TRUE) # 791
+
+iws_hi_permits_cl <- iws_hi_permits %>% 
+  clean_names() %>%
+  mutate(approval_date = mdy(final_approval_date),
+         year = year(approval_date))
+
+# create flag indicating if the duplicate is for the same year, or a different year
+
+iws_hi_permits_flag <- iws_hi_permits_cl %>% 
+  group_by(full_taxid) %>% 
+  mutate(
+    n_rows = n(),
+    n_year = n_distinct(year)
+  ) %>% 
+  ungroup() %>% 
+  mutate(
+    osds_flag = case_when(
+      n_rows > 1 & n_year > 1 ~ "possbile update or later addition",
+      n_rows > 1 & n_year == 1 ~ "possible multiple osds permits",
+      TRUE ~ NA_character_
+    )
+  )
+
+check_dups_again <- filter(iws_hi_permits_flag, is_duplicate == TRUE)
+
+# count up the different scenarios
+
+iws_hi_scenarios <- iws_hi_permits_flag %>% 
+  group_by(osds_flag) %>% 
+  summarize(
+    total_tmks = length(unique(full_taxid))
+  )
+
+# not saving for now
+
+
+```
+
+**RESULTS**
+- 791 of the permits issued since 2010 are for duplicate TMKS, representing 262 tmks
+- 131 are for possible upgrades or additions
+- 131 are for possible multiple osds per tmk per year
+
+- 6556 are for single permits corresponding to single tmks
+
+### Step 3: Assign Class to Permits
+
+The assignment of class is based on a previously determined scheme by
+Whittier and El Kadi (2014). The scheme is as follows:
+
+Class I = Any system receiving soil treatment, with disposal types as
+bed, trench, and infiltration chambers 
+Class II = Septic system discharging into seepage pit. This effluent only gets primary treatment. 
+Class III = Aerobic units discharging into a seepage pit. The effluent received primary and secondary treatment. 
+Class IV = Cesspools, no treatment
+
+For HI, we have the following unique scenarios:
+- Cesspool - existing
+- "Other" with bed disposal?
 
 
 
+```{r}
+
+library(janitor)
+
+# disposal types by treatment
+
+minimal_treatment <- c("Seepage Pit",
+                       "Cesspool-New")
+
+primary_treatment <- c("Bed",
+                       "Trench",
+                       "Infiltrators / Chambers",
+                       "ET Bed-Irrigation System",
+                       "Presby")
+
+unknown_treatment <- c("Other","Unknown")
+
+combo_treatment <- c("Combination of two types")
+
+
+# apply to hi data. For H
+
+iws_hi_permits_withclass <- iws_hi_permits_flag %>%
+  clean_names() %>% 
+  #filter(is.na(osds_flag)) %>% 
+  mutate(osds_class = case_when(
+    permit_type == "Septic Tank" & disposal_type %in% primary_treatment ~"1",
+    permit_type == "Septic Tank" & disposal_type %in% minimal_treatment ~"2",
+    permit_type == "Septic Tank" & disposal_type %in% unknown_treatment ~ "2", 
+    permit_type == "Septic Tank" & disposal_type %in% combo_treatment ~ "1", 
+    permit_type %in% c("Compost Toilet","Gray Water System","Compost Toilet/Gray Water System") & disposal_type %in% c("Other","Unknown")  ~ "3",
+    permit_type %in% c("Compost Toilet","Compost Toilet/Gray Water System") & disposal_type == "Bed" ~ "1",
+    permit_type == "Gray Water System" & disposal_type %in% c("Bed","Trench") ~ "3",
+    permit_type == "Aerobic Unit" & disposal_type %in% minimal_treatment ~ "4",
+    permit_type == "Cesspool-New" ~ "4",
+    permit_type == "Cesspool-Existing" ~ "4",
+    permit_type == "Aerobic Unit" & disposal_type %in% primary_treatment ~ "1",
+    permit_type == "Aerobic Unit" & disposal_type %in% unknown_treatment ~ "3",
+    permit_type == "Aerobic Unit" & disposal_type %in% combo_treatment ~ "1",
+    permit_type == "Presby (passive, NSF 40)" ~ "1",
+    permit_type == "Holding Tank (Government Only)" ~ "1",
+    permit_type == "Incinerating Toilet" ~ "1",
+    permit_type == "Other" & disposal_type %in% primary_treatment ~ "1", #because it getting soil treatment?
+    TRUE ~ "Can't assign MB" # the only one I couldnt assign just had some extra notes on the permit type
+  )) %>% 
+  mutate(osds_class = ifelse(osds_class == "Canʻt assign MB","1",osds_class)) # fix this one by hand
+
+
+
+
+# need to think about this some more. Make sure I remember where I got the treatment groups.
 
 
 
 ```
 
+### Step 4: Count addresses and permits by TMK & find min and max years
+
+Parallel to the class assignment, here I examine the address column to
+try and figure out if we can ID multiple building scenarios just from
+the permit data.
 
 
+```{r}
+
+# how many addresses per TMK can we identify?
+address_per_tmk <- iws_hi_permits_cl %>%
+  group_by(full_taxid) %>% 
+  mutate(address_full = ifelse(is.na(project_street_address2),
+                               project_street_address,
+                               paste(project_street_address,"-",project_street_address2))) %>% 
+  mutate(address_lower = str_trim(str_to_lower(address_full))) %>% # in case theyʻve been entereed differently 
+  summarize(
+    n_addresses = length(unique(address_lower)), # how many buildings on this TMK
+    n_permits = length(permit_id), # how many permits have they applied for in this time period
+    min_year = min(year),
+    last_year = max(year) # when these permits were issued
+  ) # write this one out
+
+# how many TMKS have more than one building?
+nrow(address_per_tmk[address_per_tmk$n_addresses > 1, ]) #153
+
+# does it matter if this is in lower case?
+
+nrow(address_per_tmk[address_per_tmk$n_addresses > 1, ]) # 147
+
+
+# add flag, at the TMK level 
+address_per_tmk_flag <- address_per_tmk %>% 
+  mutate(building_permit_scenario = case_when(
+    n_addresses == 1 & n_permits == 1  ~ "One building, one permit",
+    n_addresses == 1 & n_permits > 1 ~ "One buidling, multiple permits",
+    n_addresses > 1 & n_permits == 1 ~ "Multiple buildings, one permit",
+    n_addresses > 1 & n_permits > 1 ~ "Multiple buildings, Mulitple permits"
+  ),
+  year_scenario = case_when(
+    last_year == min_year ~ "All the same year",
+    TRUE ~ "Mulitple Years"
+  ))
+
+
+scenario_summary <- address_per_tmk_flag %>% 
+  group_by(building_permit_scenario,year_scenario) %>% 
+  summarize(
+    tmk_per_scenario = n()
+  )
+
+# write these out
+write_csv(address_per_tmk,
+         file.path(driver_dir,"4_OSDS_N_Runoff/output-data/qaqc/hi_permits_and_buildings_pertmk.csv"),
+         append = FALSE)
+
+
+write_csv(scenario_summary,
+         file.path(driver_dir,"4_OSDS_N_Runoff/output-data/qaqc/hi_building_scenario.csv"),
+         append = FALSE)
+
+
+
+```
+
+**Results!**
+- 6556 are one building, one permit. Yay! this matches what we got above
+- 147 of the permits are for tmks with multiple buildings
+- 38 of those tmks applied for their permits all in the same year
+- 109 of those tmks applied for permits over more than one yaer
+- 115 are for one building, but either multiple permits in the same year (N = 93) or over multiple years (N = 22)
 
 
