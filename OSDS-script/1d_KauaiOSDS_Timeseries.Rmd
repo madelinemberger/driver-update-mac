@@ -186,10 +186,8 @@ TMKS - There are 291 without Dwell information
 ### Step 2b: Identifying Upgrade Scenarios
 
 Here we will work to identify easy, tricky and hard scenarios. The steps
-are as follows: 
-1. Create a flag that flags if a TMK is repeated in the
-same year or different year 
-2. Count up scenarios and save
+are as follows: 1. Create a flag that flags if a TMK is repeated in the
+same year or different year 2. Count up scenarios and save
 
 ```{r}
 
@@ -246,8 +244,8 @@ to the same TMK, which represents 252 TMKs - 82 indicate multiple
 permits for the same tmk for the same year - 170 indicate multiple
 permits for different years
 
-The rest are for unique buildings or
-addresses on the same tmk - 1601 are one building, one permit, one year
+The rest are for unique buildings or addresses on the same tmk - 1601
+are one building, one permit, one year
 
 ### Step 3: Assign Class to Permits
 
@@ -255,13 +253,15 @@ The assignment of class is based on a previously determined scheme by
 Whittier and El Kadi (2014). The scheme is as follows:
 
 Class I = Any system receiving soil treatment, with disposal types as
-bed, trench, and infiltration chambers 
-Class II = Septic system discharging into seepage pit. This effluent only gets primary treatment. 
-Class III = Aerobic units discharging into a seepage pit. The effluent received primary and secondary treatment. 
-Class IV = Cesspools, no treatment
+bed, trench, and infiltration chambers Class II = Septic system
+discharging into seepage pit. This effluent only gets primary treatment.
+Class III = Aerobic units discharging into a seepage pit. The effluent
+received primary and secondary treatment. Class IV = Cesspools, no
+treatment
 
 Class V = multiple with at least one cesspool. So note this will only
-apply to those that weʻve flagged above that may have multiple. Not using this one for now. 
+apply to those that weʻve flagged above that may have multiple. Not
+using this one for now.
 
 ```{r}
 
@@ -451,7 +451,7 @@ ones.
 
 ### A) Compare to OTP (2010 timestamp)
 
-Let's start with the easy list. We'll read in the old OSDS dataset and
+Let's start with the **easy list**. We'll read in the old OSDS dataset and
 assume that what ever is recorded for that tmk in there is what it was
 before 2010. If our new dataset has something different, we know its
 changed. Important Assumption from Julia's work: if a location goes from
@@ -483,7 +483,7 @@ represents:
     pit.\
 -   CLASS_III: Class III OSDS are aerobic systems discharging to a
     seepage pit.
--   CLASS_IV: Class IV OSDS are c cesspools.\
+-   CLASS_IV: Class IV OSDS are cesspools.\
 -   EFFLUENT: The total effluent flux in million gallons per day
     discharged within the TMK parcel.
 
@@ -717,7 +717,7 @@ change occurred on a tmk with many existing osds.
 
 We also have 97 data overlaps, which I'll make sure aren't different,
 and then delete duplicates. There are 8 where we record a "last class"
-that is a class lower than OTP. Given the number of multiunits in Kauai,
+that is a class lower than OTP. Given the number of multi-units in Kauai,
 I'm not super surprised but we should also double check these.
 
 Of the upgrades (N = 636): - 618 are cesspool upgrades - an additional

@@ -499,14 +499,14 @@ scenario_summary <- address_per_tmk %>%
     tmk_per_scenario = n()
   )
   
-write_csv(address_per_tmk,
-         file.path(driver_dir,"4_OSDS_N_Runoff/output-data/qaqc/permits_and_buildings_pertmk.csv"),
-         append = FALSE)
-
-
-write_csv(scenario_summary,
-         file.path(driver_dir,"4_OSDS_N_Runoff/output-data/qaqc/oahu_building_scenario.csv"),
-         append = FALSE)
+# write_csv(address_per_tmk,
+#          file.path(driver_dir,"4_OSDS_N_Runoff/output-data/qaqc/permits_and_buildings_pertmk.csv"),
+#          append = FALSE)
+# 
+# 
+# write_csv(scenario_summary,
+#          file.path(driver_dir,"4_OSDS_N_Runoff/output-data/qaqc/oahu_building_scenario.csv"),
+#          append = FALSE)
 
 ```
 
@@ -548,6 +548,8 @@ write_csv(iws_oahu_permits_easyscenario,
 tricky_tmks <- address_per_tmk %>% 
   filter(building_permit_scenario %in% c("One buidling, multiple permits"))
 
+sum(tricky_tmks$n_permits) # 100
+
 iws_oahu_permits_mediumscenario <- iws_oahu_permits_withclass %>% 
   filter(tmk %in% tricky_tmks$TMK) %>% 
   mutate(dwell_flag = ifelse(full_taxid %in% dwell_with_permits$full_taxid,"Dwelling","Other")) %>% 
@@ -559,6 +561,7 @@ iws_oahu_permits_mediumscenario <- iws_oahu_permits_withclass %>%
 hard_tmks <- address_per_tmk %>% 
   filter(building_permit_scenario %in% c("Multiple buildings, Mulitple permits"))
 
+sum(hard_tmks$n_permits) # 357
 
 iws_oahu_permits_hardscenario <- iws_oahu_permits_withclass %>% 
   filter(tmk %in% hard_tmks$TMK) %>% 

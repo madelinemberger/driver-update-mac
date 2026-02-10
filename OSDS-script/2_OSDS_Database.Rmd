@@ -60,6 +60,229 @@ Other reasons we know there might be a difference:
 
 Each of the phases below corresponds to the workflow chart in the Hawaii Driver Data Google Drive. To reduce environment clutter, phases stand alone, i.e. you can start at a phase and all dependencies should be loaded in the contained code chunks. 
 
+# Re-do Comparison
+
+January 2026: Julia sent Aimee and Chris a new version for Oahu. I will compare it to what I created with the "easy" scenario.
+
+
+I think what we'll have to do is look just at a subset of mine, because how we calculate effluent is goin
+```{r}
+
+# read in v5 from Aimee
+
+all_v5_from_aimee <- st_read(file.path(data_dir,"osds/aimee-reviewed/julia-reviewed/All_OSDS_v5_flagged.shp")) # 102,788
+
+colnames(all_v5_from_aimee)
+
+oahu_v5 <- all_v5_from_aimee %>% filter(Island == "Oahu") # 13892
+
+oahu_v5_sampleForMap <- oahu_v5 %>% head(20)
+
+mapview(oahu_v5_sampleForMap)
+
+# how many unique tmks?
+length(unique(oahu_v5$TMK))
+
+# how many osds?
+sum(oahu_v5$osds_qty)
+
+
+# read in my oahu versions: easy,tricky, hard and osds what have no changed since otp
+
+# one building, one permit scenarios in 
+mb_oahu_easy <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/iws_oahu_permits_easyscenario.csv")) #1384 rows, 
+
+length(unique(mb_oahu_easy$tmk)) #1328
+
+
+# otp that have not had changes
+mb_oahu_otp_nochange <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/otp_osds_wo_permitupgrade.csv")) # 12591
+
+length(unique(mb_oahu_otp_nochange$tmk_9)) #12533
+
+mb_oahu_otp_nochange_dist <- mb_oahu_otp_nochange %>% 
+  st_drop_geometry() %>% 
+  select(-geometry) %>% # when I do this, about 40 drop out
+  distinct() #12553
+
+total_otp_osds <- sum(mb_oahu_otp_nochange_dist$ttl_osds)
+# because the above two numbers are different, there must be duplicates in the otp.
+
+
+total_unique_tmks_mb = length(unique(mb_oahu_easy$tmk)) + length(unique(mb_oahu_otp_nochange$tmk_9))
+total_osds_mb = nrow(mb_oahu_easy) + total_otp_osds
+
+
+# compare to each other: filter and join easy scenarios
+
+# first, add class to mine so we can understand
+
+
+#
+oahu_v5_filteredbyeasy <- oahu_v5 %>% 
+  filter(TMK %in% mb_oahu_easy$tmk) %>% 
+  rename(PermitType_type_je = PermitType)
+  #two missing that I have
+
+
+
+
+
+```
+
+
+Next do some work to compare these two:
+
+## Julia
+- Total number of tmks with in Oahu = 13845
+- Total number of osds in Oahu = 14771 
+
+## Maddie - just old data that hasn't changed, and "easy" scenarios
+- Total number of tmks with in Oahu = 13861 (+tricky scenarios 38 + 39 + 45) = 13983
+- Total number of osds in Oahu = 14575 (+100 + 357)
+
+
+```{r}
+
+# read in building scenario and join to julias oahu v5
+
+building_scenarios <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/qaqc/permits_and_buildings_pertmk.csv")) #1412
+
+# join these to oahu v5 filtered by ease
+
+oahu_v5_filtered_join <- oahu_v5_filteredbyeasy %>% 
+  full_join(building_scenarios, by = "TMK")
+
+
+
+
+
+```
+
+## For subset: 
+- Bedroom mismatch # ?
+- Class mismatch #?
+
+```{r}
+
+# disposal types by treatment
+
+minimal_treatment <- c("Seepage Pit")
+
+primary_treatment <- c("Bed",
+                       "Trench",
+                       "Infiltrators / Chambers",
+                       "ET Bed-Irrigation System",
+                       "Presby")
+
+unknown_treatment <- c("Other","Unknown")
+
+combo_treatment <- c("Combination of two types")
+
+# first, get class on my new list
+
+mb_oahu_easy_wclass <- mb_oahu_easy %>%
+  clean_names() %>% 
+  #filter(is.na(osds_flag)) %>% 
+  mutate(osds_class = case_when(
+    permit_type == "Septic Tank" & disposal_type %in% primary_treatment ~"1",
+    permit_type == "Septic Tank" & disposal_type %in% minimal_treatment ~"2",
+    permit_type == "Septic Tank" & disposal_type %in% unknown_treatment ~ "2", 
+    permit_type == "Septic Tank" & disposal_type %in% combo_treatment ~ "1", 
+    permit_type %in% c("Compost Toilet","Gray Water System","Compost Toilet/Gray Water System") & disposal_type %in% c("Other","Unknown")  ~ "3",
+    permit_type == "Compost Toilet" & disposal_type == "Bed" ~ "1",
+    permit_type == "Gray Water System" & disposal_type %in% c("Bed","Trench") ~ "3",
+    permit_type == "Aerobic Unit" & disposal_type %in% minimal_treatment ~ "4",
+    permit_type == "Aerobic Unit" & disposal_type %in% primary_treatment ~ "1",
+    permit_type == "Aerobic Unit" & disposal_type %in% unknown_treatment ~ "3",
+    permit_type == "Aerobic Unit" & disposal_type %in% combo_treatment ~ "1",
+    permit_type == "Presby (passive, NSF 40)" ~ "1",
+    permit_type == "Holding Tank (Government Only)" ~ "1",
+    permit_type == "Incinerating Toilet" ~ "1",
+    TRUE ~ "Can't assign MB"
+  ))
+
+# then join to julias
+
+oahu_v5_filtered_join <- oahu_v5 %>% 
+  rename(tmk = TMK) %>%
+  rename(osds_class_JE = osds_class, year_JE = Year) %>% 
+  select(-starts_with("Proj")) %>% 
+  left_join(mb_oahu_easy_wclass, by = "tmk") %>% 
+  rename(osds_class_mb = osds_class, year_mb = year)
+
+mapview(head(oahu_v5_filtered_join))
+
+# select some columns
+
+oahu_v5_filtered_join_compare <- oahu_v5_filtered_join %>% 
+  select(tmk, starts_with("osds_class"),starts_with("year"),"Bedroom","dwell_flag",starts_with("class")) %>%
+  mutate(osds_class_JE = as.character(osds_class_JE)) %>% 
+  mutate(class_difference = ifelse(osds_class_JE != osds_class_mb,"Y","N")) %>% 
+  mutate(bedroom_mismatch = ifelse(Bedroom != 0 & dwell_flag == "Other","Y","N"))
+
+
+mapview(head(oahu_v5_filtered_join_compare))
+mapview(oahu_v5_filtered_join_compare)
+
+
+# count 
+
+
+summarize_differences <- oahu_v5_filtered_join_compare %>% 
+  st_drop_geometry() %>% 
+  group_by(class_difference,bedroom_mismatch) %>% 
+  summarize(
+    permits_num = n()
+  )
+
+
+# 64 have different classes
+# 5 I have classified as non dwellings, but Julia has bedroom numbers
+
+# make maps indicating these differences
+
+class_diffs <- oahu_v5_filtered_join_compare %>%  filter(class_difference == "Y")
+
+broken_record <- class_diffs %>% 
+  filter(st_coordinates(geometry)[,1] < -200) # Longitude can't be -200
+
+print(broken_record$tmk)
+  
+  
+class_diffs <- class_diffs %>% filter(tmk %!in% broken_record$tmk)
+
+mapview(class_diffs, zcol = "osds_class_JE")
+  
+
+```
+
+Final note: the following TMKS have incorrect geometries in the Oahu V5 from class diff. 
+
+ - 151002018
+ - 161003057
+ 
+ Run the filter on the entire dataset: 
+ 
+```{r}
+
+oahu_v5_broken <- oahu_v5 %>% 
+  filter(st_coordinates(geometry)[,1] < -200) #122 geometries
+  
+print(length(oahu_v5_broken$TMK))
+print(sum(oahu_v5_broken$osds_qty)) # 122 also 
+
+broken_summary <- oahu_v5_broken %>% 
+  st_drop_geometry() %>% 
+  group_by()
+  
+
+```
+ 
+
+
+
+
 # Phase 1: Data Prep and Cleaning
 
 ## Clean Raw Dwell Data

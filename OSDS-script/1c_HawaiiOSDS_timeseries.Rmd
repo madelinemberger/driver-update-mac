@@ -381,6 +381,10 @@ Ok so it looks like col Spec B has worked really well for all years. Who knew! I
 
 ```{r}
 
+# if starting here, read in HI clean dwelling data
+
+allyears_hi_dwell <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/dwellings/hi_dwell_clean_2010_2023_permitTMKonly.csv"))
+
 # create new column with length of yearbuilt, and print unique instances
 
 allyears_dwell$yearblt_length <- nchar(allyears_dwell$YRBLT)
@@ -404,6 +408,11 @@ Hmm ok so I think I actually did not solve the parsing problem, and 2019 - 2023 
 Here we join dwell data to the permit information for the ones that correspond to dwellings, and save the list of non-dwell TMKS.
 
 ```{r}
+
+# read in clean dwelling data
+
+allyears_hi_dwell <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/dwellings/hi_dwell_clean_2010_2023_permitTMKonly.csv")) %>% 
+  mutate(full_taxid = as.character(full_taxid))
 
 # read in HI iws permits
 
@@ -639,7 +648,19 @@ write_csv(scenario_summary,
          file.path(driver_dir,"4_OSDS_N_Runoff/output-data/qaqc/hi_building_scenario.csv"),
          append = FALSE)
 
+# dont' forget to write the data
 
+easys <- address_per_tmk_flag %>% 
+  filter(building_permit_scenario == "One building, one permit") #6556
+
+iws_hi_permits_easyscenario <- iws_hi_permits_withclass %>% 
+  filter(tmk %in% easys$full_taxid) %>% 
+  mutate(dwell_flag = ifelse(full_taxid %in% iws_hi_dwell_join$full_taxid,"Dwelling","Other")) %>% 
+  select(-n_rows,-n_year, -osds_flag) #6556
+
+write_csv(iws_hi_permits_easyscenario,
+         file.path(driver_dir,"4_OSDS_N_Runoff/output-data/iws_hi_permits_easyscenario.csv"),
+         append = FALSE)
 
 ```
 
@@ -650,4 +671,298 @@ write_csv(scenario_summary,
 - 109 of those tmks applied for permits over more than one yaer
 - 115 are for one building, but either multiple permits in the same year (N = 93) or over multiple years (N = 22)
 
+
+## Compare to Past Datasets to Complete the Time Series
+
+We have to bring in the past OSDS dataset to have a record of what each
+tmk was bedroom wise and class wise prior to 2009 (which is when our
+permit data starts). Without it, we can only track changes and upgrades
+within the 2009 - 2020. Weʻll add this as a column. Once we do this, we
+can generate cesspool upgrade list.
+
+There are two main categories of comparison from Step 2; 
+- Easy situations where we have one building, one permit per tmk 
+- More complex ones.
+
+### A) EASY scenario compare to OTP (2010 timestamp)
+
+Let's start with the **easy list**. We'll read in the old OSDS dataset and
+assume that what ever is recorded for that tmk in there is what it was
+before 2010. If our new dataset has something different, we know its
+changed. Important Assumption from Julia's work: if a location goes from
+septic, or better, to CESSPOOL is probably wrong?
+
+First read in most recently available data for Kauai and Explore:
+
+```{r}
+
+hi_otp <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/large-input-data/OSDS_HIGIS_2010/On-site_Sewage_Disposal_Systems_-_Hawaii_Island.csv"))
+
+unique(hi_otp$class)
+
+```
+
+So the Hawaii database has a similar format to the others, but also has a column with "source", indicating that someone has already gone through the processes of bringing in additional information for TMKS not in the Dwelling Assessment. This means that we should use this for our "mismatches" in the new data. There are also notes for all the commercial properties which is great!
+
+UNFORTUNATELY there is no information about how effluent was calculated for non dwells as far as I can tell, but maybe some snooping around later will fix that. And, is a good reason to apply a standardized approach that matches the other islands.
+
+We also have these! Which are helpful:
+
+PITT Code Values:   0  Timeshare (Maui only)   100’s*  Improved Residential   200’s  Apartment   300’s  Commercial   400’s  Industrial   500’s  Agricultural and Rural   600’s   Conservation   700’s   Hotel and Resort   800’s**  Unimproved Residential   900’s  Homeowner    999   Multiple PITT Codes for a single TMK   1000’s  Commercialized Residential (Maui only)      *  Kauai:  100 = Improved and Unimproved Residential   **  Kauai:  800 = Homestead Properties 
+
+Also: lots of -9999 in class? And no class 4 or 5. That makes no sense. 
+
+Some of this data is messy and yuck but there is also a lot of helpful work that it looks like the department of health did in 2017 (or Joey did?) 
+
+Another weird thing about this data is that they dropped the year column. 
+
+We only have classes 1 - 4 in this data. From the metadata, this
+represents:
+
+-   CLASS_I: Class I OSDS are those systems where the effluent is
+    subjected to soil treatment
+-   CLASS_II: Class II OSDS are septic systems discharging to a seepage
+    pit.\
+-   CLASS_III: Class III OSDS are aerobic systems discharging to a
+    seepage pit.
+-   CLASS_IV: Class IV OSDS are cesspools.\
+-   EFFLUENT: The total effluent flux in million gallons per day
+    discharged within the TMK parcel.
+    
+    
+The `osds_class` column also does not have any 4s, just 1-3, and -9999. I'll use the same additive coding here as I did with Maui Nui, Kauai (and eventually Oahu): 
+
+| Combination                           | Sum |
+|---------------------------------------|-----|
+| Class 1                               | 1   |
+| Class 2                               | 2   |
+| Class 1 + Class 2                     | 3   |
+| Class 3                               | 4   |
+| Class 1 + Class 3                     | 5   |
+| Class 2 + Class 3                     | 6   |
+| Class 1 + Class 2 + Class 3           | 7   |
+| Class 4                               | 8   |
+| Class 1 + Class 4                     | 9   |
+| Class 2 + Class 4                     | 10  |
+| Class 1 + Class 2 + Class 4           | 11  |
+| Class 3 + Class 4                     | 12  |
+| Class 1 + Class 3 + Class 4           | 13  |
+| Class 2 + Class 3 + Class 4           | 14  |
+| Class 1 + Class 2 + Class 3 + Class 4 | 15  |
+
+```{r}
+library(janitor)
+
+hi_otp_clean <- hi_otp %>% 
+  clean_names() %>% 
+  select(tmk, starts_with("class"), "osds_qty") # n = 13351 !
+
+# read in the "easy scenario" new data, which are examples of one building and one permit TMKS. check for any duplciates
+
+onebuilding_onepermit <- read.csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/iws_hi_permits_easyscenario.csv"))
+
+onebuilding_onepermit_distinct <- onebuilding_onepermit %>% 
+  select(-permit_id) %>% 
+  distinct() # none, cool!
+
+
+# -----------  Q1:  do all these new ones exist in the old data? if not, then they are NEW osds builds ------------- #
+
+otp_hi_filtered_byOBOP <- hi_otp_clean %>% 
+  mutate(tmk = as.integer(tmk)) %>% 
+  filter(tmk %in% onebuilding_onepermit$tmk) %>% 
+  distinct() %>% # KEY: remove EXACT duplicates. We are treating these as errors
+  rowid_to_column("newbuild_permit_id") %>% 
+  mutate(year_issued = 2010) %>% # note this isn't right, just a place hodler for "pre 2010" to maintain consistent data structure in this column 
+  mutate(change_flag = "new permit detected since otp") #2337
+
+
+otp_kauai_NOTinOBOP <- hi_otp_clean %>%
+  mutate(tmk = as.integer(tmk)) %>% 
+  filter(tmk %!in% onebuilding_onepermit$tmk) %>% 
+  rowid_to_column("old_permit_id") %>% 
+  mutate(change_flag = "no new permit application since otp") 
+  
+
+write_csv(otp_kauai_NOTinOBOP,
+          file.path(driver_dir,"4_OSDS_N_Runoff/output-data/otp_osds_wo_permitupgrade_hi.csv")) 
+
+
+# -----------  Q2:  Which of the new builds are new OSDS, rather than builds on tmks with existing OSDS? ------------- #
+
+
+onebuilding_onepermit_NEW_since2010 <- onebuilding_onepermit %>% 
+  filter(tmk %!in% otp_hi_filtered_byOBOP$tmk) # 4219?? wow
+
+length(unique(onebuilding_onepermit_NEW_since2010$tmk)) #4219 
+
+# use set diff to see if its the same
+tmks_not_inbob <- setdiff(onebuilding_onepermit$tmk, otp_hi_filtered_byOBOP$tmk) #4219 YAY
+
+onebuilding_onepermit_NEW_since2010_otherway <- onebuilding_onepermit %>% 
+  filter(tmk %in% tmks_not_inbob) 
+
+
+write_csv(onebuilding_onepermit_NEW_since2010_otherway,
+          file.path(driver_dir,"4_OSDS_N_Runoff/output-data/hi_osds_new_since_otp.csv"))
+
+# --------------- Old Data: Data Reshape ------------------------------------- #
+
+
+# Here I take the tmks present in OTP AND the new permit data, which represent upgrades. I reassign class to match the additive encoding schema, and then pivot wider. 
+
+
+
+otp_hi_filtered_byOBOP_wide <- otp_hi_filtered_byOBOP %>% 
+  select(-class) %>% 
+  pivot_longer(cols = starts_with("class"), names_to = "class", values_to = "quantity") %>% 
+  filter(quantity != 0) %>% 
+  rename(ttl_osds_2010 = osds_qty) %>% 
+  mutate(osds_class_otp = case_when(
+    class == "class_iv" ~ 8, # cesspool 
+    class == "class_iii" ~ 4,
+    class == "class_ii" ~ 2,
+    class == "class_i" ~ 1
+  )) %>%
+  pivot_wider(id_cols = c("newbuild_permit_id","tmk","ttl_osds_2010"), 
+              names_from = c("year_issued","class"), values_from = c("quantity"))
+
+
+
+dups_check <- otp_hi_filtered_byOBOP_wide %>% mutate(duplicated = duplicated(tmk)) # none
+
+otp_hi_morethan1osds <- otp_hi_filtered_byOBOP_wide %>% 
+  filter(ttl_osds_2010 > 1) #311
+
+# now, add the encoding 
+
+otp_hi_filtered_byOBOP_wideENC <- otp_hi_filtered_byOBOP %>% 
+  select(-class) %>% 
+  pivot_longer(cols = starts_with("class"), names_to = "class", values_to = "quantity") %>% 
+  filter(quantity != 0) %>% 
+  rename(ttl_osds_2010 = osds_qty) %>% 
+  mutate(osds_class_otp = case_when(
+    class == "class_iv" ~ 8, # cesspool 
+    class == "class_iii" ~ 4,
+    class == "class_ii" ~ 2,
+    class == "class_i" ~ 1
+  )) %>%
+  pivot_wider(id_cols = c("newbuild_permit_id","tmk","ttl_osds_2010"), names_from = c("year_issued","class"), values_from = c("osds_class_otp")) %>%
+  mutate(combo_code = rowSums(across(starts_with("2010")), na.rm = TRUE))
+
+otp_hi_filtered_byOBOP_longENC <- otp_hi_filtered_byOBOP_wideENC %>% # collapse the wide columns
+  select(-starts_with("2010"), -newbuild_permit_id)
+
+
+# --------------- New Data: Data Reshape ------------------------------------- #
+
+
+# now pivot the NEW data, for now just the "easy", that is also in OTP, one building one permit category, wider to match
+
+onebuild_onepermit_inbob <- onebuilding_onepermit%>% 
+  filter(tmk %in% otp_hi_filtered_byOBOP$tmk)
+
+onebuild_onepermit_hi_wide <- onebuild_onepermit_inbob %>% 
+  pivot_wider(id_cols = c("permit_id","tmk"), names_from = "year", values_from = c("permit_type","osds_class"))
+
+dups_obop_hi <- onebuild_onepermit_hi_wide %>% mutate(duplicated = duplicated(tmk)) # no duplicates. great. 
+
+
+# -------------- Combine:  Join our two wide tables together ----------------------------------- #
+
+# IMPORTANT note: since 493 of the bob data have more than one OSDS, but the new data here are examples of just one building, one new permit, if any of the new data match to the old ones with more than one osds, weʻll have to make an assumption about which one was updated in this new data. 
+
+all_osds_present_inboth <- left_join(dups_obop_hi, otp_hi_filtered_byOBOP_longENC, by = c("tmk"))
+
+# so the next analysis will determine the most recent year a tmk was upgraded. We can add a flag for if there was an upgrade and there are multiple OSDS on the property. hoping that most of these did not have an upgrade. 
+
+
+all_permit_present_inboth_long <- all_osds_present_inboth %>% 
+  rename(otp_class_2010 = combo_code) %>% # this is what it was in 2010
+  select(-starts_with("permit_type")) %>% # we dont need this right now
+  pivot_longer(cols = starts_with("osds"),
+               names_to = "year",
+               values_to = "class",
+               values_drop_na = TRUE) %>% 
+  mutate(
+    year_num = as.integer(str_remove(year, "osds_class_"))  # extract numeric year rather than colname with year in it
+  )
+
+
+# here we'll use some logic to create a yes/no flag if upgraded, and a specific text flag for what kind of upgrade it was 
+
+
+last_permit_persentinboth <- all_permit_present_inboth_long %>% 
+  group_by(tmk) %>% 
+  slice_max(year_num, n = 1, with_ties = FALSE) %>% # get the latest year we have records for a given tmk
+  mutate(class_last = as.numeric(class),
+         class_last_year = year_num,
+         class_otp = as.numeric(otp_class_2010)) %>% 
+  mutate(upgrade_yn = case_when(
+    class_last < class_otp & class_otp %in% c(1,2,4,8) ~ "upgrade occured on a single osds",
+    class_last < class_otp & class_otp %!in% c(1,2,4,8) ~ "change occured on one of many existing osds",
+    class_last == class_otp & class_otp %in% c(1,2,4,8) & class_last_year > 2010 ~ "addition",
+    class_last == class_otp & class_otp %in% c(1,2,4,8) & class_last_year <= 2010 ~ "data overlap",
+    class_last > class_otp  ~ "check class assignment"
+  )) %>% 
+  mutate(cesspool_upgrade = case_when(
+    class_otp == 8 & class_last < 4 ~ "cesspool upgraded",
+    class_otp %in% c(9,10,11,12,13,14,15) & class_last < 4 ~ "maybe cesspool upgraded - multiple existing osds",
+    class_last == 4 & class_last_year > 2010 ~ "new cesspool permit",
+    class_otp == 4 & class_last == 4 & class_last_year %in% c(2009,2010) ~ "duplicate, not upgraded",
+    class_otp %!in% c(9,10,11,12,13,14,15) ~ "na"
+  ))
+
+
+# save! remember, we need to do this for the tricky and hard scenarios, and non dwells, as well
+write_csv(last_permit_persentinboth,
+          file.path(driver_dir,"4_OSDS_N_Runoff/output-data/hi_easy_possible_OSDSupgrades_withflag.csv"))
+
+```
+
+So there are a number here where there are more than one cesspool - we
+may want to make an assumption that if there is one new permit for
+something better than a cesspool (ie a septic tank), its replacing both
+cesspools? OR, again another place for sensitivity analysis.
+
+Also an important assumption: if there is a more recent application for
+a place with cesspools, would that be for an ADDITIONAL cesspool or to
+re-build one of them? not as important for effluent calculation, but
+important for Chris and Aimee's work.
+
+Last step! Tally up the changes and record as results below.
+
+```{r}
+
+
+upgrade_tally <- last_permit_persentinboth %>% 
+  group_by(upgrade_yn) %>% 
+  summarize(
+    total_n = n()
+  )
+
+cesspool_upgrade_tally <-  last_permit_persentinboth %>% 
+  group_by(cesspool_upgrade) %>% 
+  summarize(
+    total_n = n()
+  )
+
+
+
+```
+
+
+WITHOUT COUNTING our more difficult scenarios: we have recorded 1514
+upgrades   
+351 possible additions or replacements of same kind   
+114 where a change occurred on a tmk with many existing osds.
+
+We also have 354 data overlaps, which I'll make sure aren't different,
+and then delete duplicates.   
+There are 4 where we record a "last class" that is a class lower than OTP. Need to double check these.
+
+Of the upgrades (N = 1514), 
+- 1195 are cesspool upgrades. 
+- 101 are upgrades that occured on tks with many osds, of which one was a cesspool
+- 133 are new cesspool permits since 2010
 
