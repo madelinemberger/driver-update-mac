@@ -668,7 +668,7 @@ write_csv(iws_hi_permits_easyscenario,
 - 6556 are one building, one permit. Yay! this matches what we got above
 - 147 of the permits are for tmks with multiple buildings
 - 38 of those tmks applied for their permits all in the same year
-- 109 of those tmks applied for permits over more than one yaer
+- 109 of those tmks applied for permits over more than one year
 - 115 are for one building, but either multiple permits in the same year (N = 93) or over multiple years (N = 22)
 
 
@@ -965,4 +965,177 @@ Of the upgrades (N = 1514),
 - 1195 are cesspool upgrades. 
 - 101 are upgrades that occured on tks with many osds, of which one was a cesspool
 - 133 are new cesspool permits since 2010
+
+
+### B) NON DWELL scenarios
+
+The old Hawaii osds data alread has categorized non dwells to some extent. Here I'll see how many of the new, non-dwell permits correspond to these old-places.
+
+```{r}
+
+# read in the non dwells - ie new permits for which we did not have any dwelling information
+
+hi_permits_nodwellinfo <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/qaqc/hi_iwspermits_nodwellinginfo.csv")) %>% clean_names() #1105
+
+
+# hi otp commercial
+hi_otp_commercial <- hi_otp %>% 
+  filter(!is.na(commercial)) %>% 
+  select(tmk, commercial, osds_qty, starts_with("class"), effluent,ttl_bdrms,source) %>%
+  rename_with(~ paste0(.x, "_from_otp"), .cols = -1)
+  
+
+# left join, with hi
+hi_newpermits_plusotpinfo <- left_join(hi_permits_nodwellinfo, hi_otp_commercial, by = "tmk")
+
+# how many of the missing permits did we snag?
+
+got_info <- hi_newpermits_plusotpinfo %>% filter(!is.na(commercial_from_otp)) # 289 only
+
+# try another way- filter
+
+hi_newpermits_noDwellfiltered <- hi_permits_nodwellinfo %>% 
+  filter(tmk %in% hi_otp_commercial$tmk) # 289. same. 
+
+
+# what about the rest of these? are the in the full otp, not filtered, dataset?
+
+not_got_info <- hi_newpermits_plusotpinfo %>% filter(is.na(commercial_from_otp)) #816
+
+hi_otp_filtered_byNGI <- hi_otp %>% 
+  filter(tmk %in% not_got_info$tmk) %>% 
+  mutate(dwell_flag = "tmk not in dwelling data, but someone added bedroom #")# 132
+
+# any others we did not account for? no
+
+######### save the hi_otp by NGI so we can recombine with other dwelling data ################
+
+write_csv(hi_otp_filtered_byNGI,
+          file.path())
+
+```
+
+Ok! So, the Non-dwelling data is somewhat solved for Big Island. Here is the breakdown:
+- 289 are known commercial locations
+- 816 are not known commercial locations, but whoever updated this last has marked all of them with source = something other than Dwell Data. But the good news is that we now have all the info needed to calculate old effluent + if these were upgraded!
+
+```{r}
+
+# create the two tables for the commercial locations
+
+########### table 1: tmk + key identifying info
+
+table_1 <- got_info %>% 
+  select(permit_id,tmk, island, starts_with("project"), final_approval_date, commercial_from_otp)
+
+############# table 2: class by year. we need to assign class to the new data, and reshape the old data. 
+
+# disposal types by treatment
+
+minimal_treatment <- c("Seepage Pit",
+                       "Cesspool-New")
+
+primary_treatment <- c("Bed",
+                       "Trench",
+                       "Infiltrators / Chambers",
+                       "ET Bed-Irrigation System",
+                       "Presby")
+
+unknown_treatment <- c("Other","Unknown")
+
+combo_treatment <- c("Combination of two types")
+
+hi_commercial_odsd_YearClasstable <- got_info %>% 
+  select(permit_id, tmk, project_street_address, project_street_address2, final_approval_date, permit_type, disposal_type, ends_with("from_otp")) %>% 
+  select(-class_from_otp) %>% 
+  mutate(new_osds_class = case_when(
+    permit_type == "Septic Tank" & disposal_type %in% primary_treatment ~"1",
+    permit_type == "Septic Tank" & disposal_type %in% minimal_treatment ~"2",
+    permit_type == "Septic Tank" & disposal_type %in% unknown_treatment ~ "2", 
+    permit_type == "Septic Tank" & disposal_type %in% combo_treatment ~ "1", 
+    permit_type %in% c("Compost Toilet","Gray Water System","Compost Toilet/Gray Water System") & disposal_type %in% c("Other","Unknown")  ~ "3",
+    permit_type %in% c("Compost Toilet","Compost Toilet/Gray Water System") & disposal_type == "Bed" ~ "1",
+    permit_type == "Gray Water System" & disposal_type %in% c("Bed","Trench") ~ "3",
+    permit_type == "Aerobic Unit" & disposal_type %in% minimal_treatment ~ "4",
+    permit_type == "Cesspool-New" ~ "4",
+    permit_type == "Cesspool-Existing" ~ "4",
+    permit_type == "Aerobic Unit" & disposal_type %in% primary_treatment ~ "1",
+    permit_type == "Aerobic Unit" & disposal_type %in% unknown_treatment ~ "3",
+    permit_type == "Aerobic Unit" & disposal_type %in% combo_treatment ~ "1",
+    permit_type == "Presby (passive, NSF 40)" ~ "1",
+    permit_type == "Holding Tank (Government Only)" ~ "1",
+    permit_type == "Incinerating Toilet" ~ "1",
+    permit_type == "Other" & disposal_type %in% primary_treatment ~ "1", #because it getting soil treatment?
+    TRUE ~ "Can't assign MB" # the only one I couldnt assign just had some extra notes on the permit type
+  )) %>% 
+  mutate(approval_date = mdy(final_approval_date),
+         year = year(approval_date))
+
+hi_commercial_odsd_new_clean <- hi_commercial_odsd_YearClasstable %>% 
+  select(permit_id, tmk,starts_with("project"),final_approval_date,year,new_osds_class) %>% 
+  pivot_wider(id_cols = c("permit_id","tmk","project_street_address","project_street_address2","final_approval_date"), names_from = year, values_from = new_osds_class)
+
+hi_commercial_osds_olds <- got_info %>% 
+  select(permit_id,tmk,project_street_address, project_street_address2,final_approval_date, ends_with("from_otp")) %>% 
+  pivot_longer(cols = starts_with("class"), names_to = "class", values_to = "quantity") %>% 
+  filter(quantity != -9999) %>% 
+  mutate(year = 2010) %>% 
+  rename(ttl_osds_2010 = osds_qty_from_otp) %>% 
+  mutate(osds_class_otp = case_when(
+    str_detect(class, "class_iv") ~ 8, # cesspool 
+    str_detect(class, "class_iii") ~ 4,
+    str_detect(class, "class_ii") ~ 2,
+    str_detect(class, "class_i") ~ 1
+  )) %>%
+  pivot_wider(id_cols = c("permit_id","tmk","project_street_address","final_approval_date","ttl_osds_2010"), names_from = c("class","year"), values_from = c("osds_class_otp")) %>%
+  select(-class_from_otp_2010) %>% 
+  mutate(combo_code = rowSums(across(starts_with("class")), na.rm = TRUE))
+
+# join together
+
+hi_commercial_olds_cl <- hi_commercial_osds_olds %>% 
+  select(-starts_with("class")) %>% 
+  rename(prior_class = combo_code)
+
+
+table_2_final <- left_join(hi_commercial_olds_cl,hi_commercial_odsd_new_clean, by = c(
+  "permit_id",
+  "tmk",
+  "project_street_address",
+  "final_approval_date"
+))
+
+# use anti join to check that all of info in table 1 are in table 2
+
+missing_rows <- anti_join(table_1, table_2_final, by = c(
+  "permit_id",
+  "tmk",
+  "project_street_address",
+  "final_approval_date"
+)) # 0, yay!!
+
+
+
+# save to drop box
+
+write_csv(table1,
+          file.path(driver_dir,"4_OSDS_N_Runoff/output-data/commercial_finaltables/hi_comm_table1.csv"))
+
+write_csv(table_2_final,
+          file.path(driver_dir,"4_OSDS_N_Runoff/output-data/commercial_finaltables/hi_comm_table2.csv"))
+
+```
+
+
+### c) TRICKY and HARD scenarios
+
+For the tricky and hard scenarios, we have to do a bit of extra data wrangling. 
+
+```{r}
+
+
+
+
+
+```
 
