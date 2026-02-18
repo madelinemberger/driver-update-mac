@@ -139,8 +139,6 @@ hi_dwell_2021 <- read_fwf(file.path(driver_dir,"4_OSDS_N_Runoff/input-data/Dwell
 
 
 
-
-
 ```
 
 I realized that specification docs were included for all years after 2012. I looked at them all side by side and there appear to be two distinct versions. The first (A) applies only to 2013, and 2019 - 2023. The second one (B) applies to 2014 - 2018.
@@ -473,7 +471,11 @@ iws_hi_permits_dups <- filter(iws_hi_permits, is_duplicate == TRUE) # 791
 iws_hi_permits_cl <- iws_hi_permits %>% 
   clean_names() %>%
   mutate(approval_date = mdy(final_approval_date),
-         year = year(approval_date))
+         year = year(approval_date)) %>% 
+  mutate(address_full = ifelse(is.na(project_street_address2),
+                               project_street_address,
+                               paste(project_street_address,"-",project_street_address2))) %>% 
+  mutate(address_lower = str_trim(str_to_lower(address_full))) 
 
 # create flag indicating if the duplicate is for the same year, or a different year
 
@@ -579,13 +581,28 @@ iws_hi_permits_withclass <- iws_hi_permits_flag %>%
   mutate(osds_class = ifelse(osds_class == "Canʻt assign MB","1",osds_class)) # fix this one by hand
 
 
-
-
-# need to think about this some more. Make sure I remember where I got the treatment groups.
+use we
 
 
 
 ```
+
+Ok, so the above version has not deleted any rows from our data set. But, when i start looking at easy, tricky, hard scenarios below i realized there are a lot of exact duplicates.
+
+VERY IMPORTANT: because we don't use number of osds in our effluent calculations, if all osds on the property are the same class, its the same as if there were only one of that class. So below, I am going to remove EXACT duplicates 
+
+I'm also going to do the address work above when I clean up the iws permits, so that they are already consistent for all other work 
+
+```{r}
+
+iws_hi_permits_withclass_distinct <- iws_hi_permits_withclass %>% 
+  select(-permit_id) %>% 
+  distinct() # this removed ~200 is permits
+
+
+
+```
+
 
 ### Step 4: Count addresses and permits by TMK & find min and max years
 
@@ -639,28 +656,60 @@ scenario_summary <- address_per_tmk_flag %>%
   )
 
 # write these out
-write_csv(address_per_tmk,
-         file.path(driver_dir,"4_OSDS_N_Runoff/output-data/qaqc/hi_permits_and_buildings_pertmk.csv"),
-         append = FALSE)
-
-
-write_csv(scenario_summary,
-         file.path(driver_dir,"4_OSDS_N_Runoff/output-data/qaqc/hi_building_scenario.csv"),
-         append = FALSE)
+# write_csv(address_per_tmk,
+#          file.path(driver_dir,"4_OSDS_N_Runoff/output-data/qaqc/hi_permits_and_buildings_pertmk.csv"),
+#          append = FALSE)
+# 
+# 
+# write_csv(scenario_summary,
+#          file.path(driver_dir,"4_OSDS_N_Runoff/output-data/qaqc/hi_building_scenario.csv"),
+#          append = FALSE)
 
 # dont' forget to write the data
+
+# what are the unique combinations of code?
+
+address_per_tmk_flag %>% distinct(building_permit_scenario, year_scenario)
 
 easys <- address_per_tmk_flag %>% 
   filter(building_permit_scenario == "One building, one permit") #6556
 
-iws_hi_permits_easyscenario <- iws_hi_permits_withclass %>% 
+iws_hi_permits_easyscenario <- iws_hi_permits_withclass_distinct %>% 
   filter(tmk %in% easys$full_taxid) %>% 
   mutate(dwell_flag = ifelse(full_taxid %in% iws_hi_dwell_join$full_taxid,"Dwelling","Other")) %>% 
   select(-n_rows,-n_year, -osds_flag) #6556
 
-write_csv(iws_hi_permits_easyscenario,
-         file.path(driver_dir,"4_OSDS_N_Runoff/output-data/iws_hi_permits_easyscenario.csv"),
-         append = FALSE)
+# write_csv(iws_hi_permits_easyscenario,
+#          file.path(driver_dir,"4_OSDS_N_Runoff/output-data/iws_hi_permits_easyscenario.csv"),
+#          append = FALSE)
+
+# other one building scenarios:
+
+medium_tmks <- address_per_tmk_flag %>% 
+  filter(building_permit_scenario == "One buidling, multiple permits") # 115
+
+iws_hi_permits_MEDscenario <- iws_hi_permits_withclass_distinct %>% 
+  filter(tmk %in% medium_tmks$full_taxid) %>% 
+  select(-starts_with("project"), -address_full) %>% # remove rows that have not been standaridized
+  mutate(dwell_flag = ifelse(full_taxid %in% iws_hi_dwell_join$full_taxid,"Dwelling","Other")) %>% 
+  filter(dwell_flag != "Other")
+
+iws_hi_permits_MEDscenario_dist <- iws_hi_permits_MEDscenario %>% distinct()
+
+# filter out hard and tricky 
+
+tricky_tmks <- address_per_tmk_flag %>% 
+  filter(building_permit_scenario == "Multiple buildings, Mulitple permits" & year_scenario == "All the same year") # 38
+
+iws_hi_permits_TRICKYscenario <- iws_hi_permits_withclass_distinct %>% 
+  filter(tmk %in% tricky_tmks$full_taxid) %>% 
+  select(-starts_with("project"), -address_full) %>% 
+  mutate(dwell_flag = ifelse(full_taxid %in% iws_hi_dwell_join$full_taxid,"Dwelling","Other")) %>% 
+  filter(dwell_flag != "Other") # 35
+
+hard_tmks <- address_per_tmk_flag %>% 
+  filter(building_permit_scenario == "Multiple buildings, Mulitple permits" & year_scenario == "Mulitple Years") #109
+
 
 ```
 
@@ -670,6 +719,36 @@ write_csv(iws_hi_permits_easyscenario,
 - 38 of those tmks applied for their permits all in the same year
 - 109 of those tmks applied for permits over more than one year
 - 115 are for one building, but either multiple permits in the same year (N = 93) or over multiple years (N = 22)
+
+### Step 5: Extra Wrangling Steps for Medium and Tricky Scenarios
+
+Medium & Tricky: 
+- If the class is the same, treat as just one class and sum all the bedrooms
+- If different classes, then distribute classes evenly
+
+
+
+```{r}
+
+# first put all the tricky and medium together. Then figure out:
+# - total qty
+# - if the total qty are of the same class 
+# - if there are two classes in the same year --> additive encoding 
+# - bedroom calculation will be using mode
+
+tmklist1_table1 <- rbind(iws_hi_permits_MEDscenario_dist, iws_hi_permits_TRICKYscenario) %>% distinct()
+
+length(unique(tmklist1_table1$tmk)) # 82 unique tmks
+
+# filter dwell data for medium tmks, sum up bedrooms and bath per tmk per year
+
+tmklist1_table2 <- allyears_hi_dwell %>% filter(full_taxid %in% tmklist1_table1$tmk)
+length(unique(tmklist1_table2$full_taxid)) # 82 unique tmks
+
+```
+
+Hard: 
+- 
 
 
 ## Compare to Past Datasets to Complete the Time Series
