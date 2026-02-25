@@ -459,474 +459,167 @@ write_csv(iws_hi_NOdwell,
 - 6242 have dwelling information, and this represents 6011 tmks
 - 1105 do not have dwelling information
 
-### Step 2b: Identifying Upgrade Scenarios
+### Step 2b: Clean and Pivot Permit Data
 
-Here we will work to identify easy, tricky and hard scenarios. The steps
+Instead of doing a bunch of stuff that identifies easy, tricky and hard scenarios, I'm condensing everything here into one big clean. 
 are as follows: 
 1. Create a flag that flags if a TMK is repeated in the
 same year or different year 
-2. Count up scenarios and save
+2. 
 
 ```{r}
 
 library(janitor)
 
-# working with just the permit data, analyze duplicates for 1 permit issued to same place, and which years
+# create a mater clean
 
-iws_hi_permits$is_duplicate <- duplicated(iws_hi_permits$TMK) | duplicated(iws_hi_permits$TMK, fromLast = TRUE)
-  
-iws_hi_permits_dups <- filter(iws_hi_permits, is_duplicate == TRUE) # 791
 
-iws_hi_permits_cl <- iws_hi_permits %>% 
+## osds class assignment function 
+# Define groups at the top of your script
+primary_disposal <- c("Bed", "Trench", "Infiltrators / Chambers", "ET Bed-Irrigation System", "Presby")
+minimal_disposal <- c("Seepage Pit", "Cesspool-New")
+unknown_disposal <- c("Other", "Unknown")
+
+# The Master Class Function
+assign_osds_class <- function(p_type, d_type) {
+  case_when(
+    p_type == "Septic Tank" & d_type %in% primary_disposal ~ "1",
+    p_type == "Septic Tank" & d_type %in% c(minimal_disposal, unknown_disposal) ~ "2",
+    p_type == "Septic Tank" & d_type == "Combination of two types" ~ "1",
+    
+    p_type %in% c("Compost Toilet", "Gray Water System", "Compost Toilet/Gray Water System") & 
+      d_type %in% unknown_disposal ~ "3",
+    p_type %in% c("Compost Toilet", "Compost Toilet/Gray Water System") & d_type == "Bed" ~ "1",
+    p_type == "Gray Water System" & d_type %in% c("Bed", "Trench") ~ "3",
+    
+    p_type == "Aerobic Unit" & d_type %in% primary_disposal ~ "1",
+    p_type == "Aerobic Unit" & d_type %in% minimal_disposal ~ "4",
+    p_type == "Aerobic Unit" & d_type %in% unknown_disposal ~ "3",
+    p_type == "Aerobic Unit" & d_type == "Combination of two types" ~ "1",
+    
+    p_type %in% c("Cesspool-New", "Cesspool-Existing") ~ "4",
+    p_type %in% c("Presby (passive, NSF 40)", "Holding Tank (Government Only)", "Incinerating Toilet") ~ "1",
+    
+    p_type == "Other" & d_type %in% primary_disposal ~ "1",
+    TRUE ~ "1" # Catch-all default based on your manual fix
+  )
+}
+
+
+## clean up permits by adding a year column, assigning osds class, and trying to standardize the address
+
+master_clean <- iws_hi_permits %>%
   clean_names() %>%
-  mutate(approval_date = mdy(final_approval_date),
-         year = year(approval_date)) %>% 
-  mutate(address_full = ifelse(is.na(project_street_address2),
-                               project_street_address,
-                               paste(project_street_address,"-",project_street_address2))) %>% 
-  mutate(address_lower = str_trim(str_to_lower(address_full))) 
-
-# create flag indicating if the duplicate is for the same year, or a different year
-
-iws_hi_permits_flag <- iws_hi_permits_cl %>% 
-  group_by(full_taxid) %>% 
   mutate(
-    n_rows = n(),
-    n_year = n_distinct(year)
-  ) %>% 
-  ungroup() %>% 
-  mutate(
-    osds_flag = case_when(
-      n_rows > 1 & n_year > 1 ~ "possbile update or later addition",
-      n_rows > 1 & n_year == 1 ~ "possible multiple osds permits",
-      TRUE ~ NA_character_
-    )
-  )
-
-check_dups_again <- filter(iws_hi_permits_flag, is_duplicate == TRUE)
-
-# count up the different scenarios
-
-iws_hi_scenarios <- iws_hi_permits_flag %>% 
-  group_by(osds_flag) %>% 
-  summarize(
-    total_tmks = length(unique(full_taxid))
-  )
-
-# not saving for now
-
-
-```
-
-**RESULTS**
-- 791 of the permits issued since 2010 are for duplicate TMKS, representing 262 tmks
-- 131 are for possible upgrades or additions
-- 131 are for possible multiple osds per tmk per year
-
-- 6556 are for single permits corresponding to single tmks
-
-### Step 3: Assign Class to Permits
-
-The assignment of class is based on a previously determined scheme by
-Whittier and El Kadi (2014). The scheme is as follows:
-
-Class I = Any system receiving soil treatment, with disposal types as
-bed, trench, and infiltration chambers 
-Class II = Septic system discharging into seepage pit. This effluent only gets primary treatment. 
-Class III = Aerobic units discharging into a seepage pit. The effluent received primary and secondary treatment. 
-Class IV = Cesspools, no treatment
-
-For HI, we have the following unique scenarios:
-- Cesspool - existing
-- "Other" with bed disposal?
-
-
-
-```{r}
-
-library(janitor)
-
-# disposal types by treatment
-
-minimal_treatment <- c("Seepage Pit",
-                       "Cesspool-New")
-
-primary_treatment <- c("Bed",
-                       "Trench",
-                       "Infiltrators / Chambers",
-                       "ET Bed-Irrigation System",
-                       "Presby")
-
-unknown_treatment <- c("Other","Unknown")
-
-combo_treatment <- c("Combination of two types")
-
-
-# apply to hi data. For H
-
-iws_hi_permits_withclass <- iws_hi_permits_flag %>%
-  clean_names() %>% 
-  #filter(is.na(osds_flag)) %>% 
-  mutate(osds_class = case_when(
-    permit_type == "Septic Tank" & disposal_type %in% primary_treatment ~"1",
-    permit_type == "Septic Tank" & disposal_type %in% minimal_treatment ~"2",
-    permit_type == "Septic Tank" & disposal_type %in% unknown_treatment ~ "2", 
-    permit_type == "Septic Tank" & disposal_type %in% combo_treatment ~ "1", 
-    permit_type %in% c("Compost Toilet","Gray Water System","Compost Toilet/Gray Water System") & disposal_type %in% c("Other","Unknown")  ~ "3",
-    permit_type %in% c("Compost Toilet","Compost Toilet/Gray Water System") & disposal_type == "Bed" ~ "1",
-    permit_type == "Gray Water System" & disposal_type %in% c("Bed","Trench") ~ "3",
-    permit_type == "Aerobic Unit" & disposal_type %in% minimal_treatment ~ "4",
-    permit_type == "Cesspool-New" ~ "4",
-    permit_type == "Cesspool-Existing" ~ "4",
-    permit_type == "Aerobic Unit" & disposal_type %in% primary_treatment ~ "1",
-    permit_type == "Aerobic Unit" & disposal_type %in% unknown_treatment ~ "3",
-    permit_type == "Aerobic Unit" & disposal_type %in% combo_treatment ~ "1",
-    permit_type == "Presby (passive, NSF 40)" ~ "1",
-    permit_type == "Holding Tank (Government Only)" ~ "1",
-    permit_type == "Incinerating Toilet" ~ "1",
-    permit_type == "Other" & disposal_type %in% primary_treatment ~ "1", #because it getting soil treatment?
-    TRUE ~ "Can't assign MB" # the only one I couldnt assign just had some extra notes on the permit type
-  )) %>% 
-  mutate(osds_class = ifelse(osds_class == "Canʻt assign MB","1",osds_class)) # fix this one by hand
-
-```
-
-Ok, so the above version has not deleted any rows from our data set. But, when i start looking at easy, tricky, hard scenarios below i realized there are a lot of exact duplicates.
-
-VERY IMPORTANT: because we don't use number of osds in our effluent calculations, if all osds on the property are the same class, its the same as if there were only one of that class. So below, I am going to remove EXACT duplicates 
-
-I'm also going to do the address work above when I clean up the iws permits, so that they are already consistent for all other work 
-
-```{r}
-
-iws_hi_permits_withclass_distinct <- iws_hi_permits_withclass %>% 
+    approval_date = mdy(final_approval_date),
+    year = year(approval_date),
+    address_full = if_else(is.na(project_street_address2), 
+                           project_street_address, 
+                           paste(project_street_address, "-", project_street_address2)),
+    address_lower = str_trim(str_to_lower(address_full)),
+    osds_class = assign_osds_class(permit_type, disposal_type),
+    dwelling_yn = ifelse(tmk %in% iws_hi_NOdwell$TMK,"no","yes")
+  ) %>%
   select(-permit_id) %>% 
-  distinct() # this removed 223 permits. 
+  distinct() # this removes any EXACT duplicates.
+
+length(unique(master_clean$tmk))
+
+# N rows = 7124 after distinct, 7347 before
+# N tmks = 6818
+
+# now create the three tables - bedroom will not be relevant for the non commercial #
 
 
+### TABLE 1 #########
 
-```
-
-
-### Step 4: Count addresses and permits by TMK & find min and max years
-
-Parallel to the class assignment, here I examine the address column to
-try and figure out if we can ID multiple building scenarios just from
-the permit data.
-
-
-```{r}
-
-# how many addresses per TMK can we identify?
-address_per_tmk <- iws_hi_permits_cl %>%
-  group_by(full_taxid) %>% 
-  mutate(address_full = ifelse(is.na(project_street_address2),
-                               project_street_address,
-                               paste(project_street_address,"-",project_street_address2))) %>% 
-  mutate(address_lower = str_trim(str_to_lower(address_full))) %>% # in case theyʻve been entereed differently 
+table1_tmk_registry <- master_clean %>%
+  group_by(full_taxid) %>%
   summarize(
-    n_addresses = length(unique(address_lower)), # how many buildings on this TMK
-    n_permits = length(permit_id), # how many permits have they applied for in this time period
+    n_permits = n(),
+    n_years = n_distinct(year),
+    n_addresses = n_distinct(address_lower),
     min_year = min(year),
-    last_year = max(year) # when these permits were issued
-  ) # write this one out
-
-# how many TMKS have more than one building?
-nrow(address_per_tmk[address_per_tmk$n_addresses > 1, ]) #153
-
-# does it matter if this is in lower case?
-
-nrow(address_per_tmk[address_per_tmk$n_addresses > 1, ]) # 147
-
-
-# add flag, at the TMK level 
-address_per_tmk_flag <- address_per_tmk %>% 
-  mutate(building_permit_scenario = case_when(
-    n_addresses == 1 & n_permits == 1  ~ "One building, one permit",
-    n_addresses == 1 & n_permits > 1 ~ "One buidling, multiple permits",
-    n_addresses > 1 & n_permits == 1 ~ "Multiple buildings, one permit",
-    n_addresses > 1 & n_permits > 1 ~ "Multiple buildings, Mulitple permits"
-  ),
-  year_scenario = case_when(
-    last_year == min_year ~ "All the same year",
-    TRUE ~ "Mulitple Years"
-  ))
-
-
-scenario_summary <- address_per_tmk_flag %>% 
-  group_by(building_permit_scenario,year_scenario) %>% 
-  summarize(
-    tmk_per_scenario = n()
+    max_year = max(year),
+    is_dwelling = any(full_taxid %in% allyears_hi_dwell$full_taxid),
+    scenario = case_when(
+      n_addresses == 1 & n_permits == 1 ~ "Simple",
+      n_addresses > 1 ~ "Multi-Building",
+      n_years > 1 ~ "Potential Upgrade",
+      TRUE ~ "Multiple Permits Same Year"
+    ),
+    .groups = "drop"
   )
 
-# write these out
-# write_csv(address_per_tmk,
-#          file.path(driver_dir,"4_OSDS_N_Runoff/output-data/qaqc/hi_permits_and_buildings_pertmk.csv"),
-#          append = FALSE)
-# 
-# 
-# write_csv(scenario_summary,
-#          file.path(driver_dir,"4_OSDS_N_Runoff/output-data/qaqc/hi_building_scenario.csv"),
-#          append = FALSE)
 
-# dont' forget to write the data
+#### TABLE 2 A and 2 B ########
 
-# what are the unique combinations of code?
-
-address_per_tmk_flag %>% distinct(building_permit_scenario, year_scenario)
-
-easys <- address_per_tmk_flag %>% 
-  filter(building_permit_scenario == "One building, one permit") #6556
-
-iws_hi_permits_easyscenario <- iws_hi_permits_withclass_distinct %>% 
-  filter(tmk %in% easys$full_taxid) %>% 
-  mutate(dwell_flag = ifelse(full_taxid %in% iws_hi_dwell_join$full_taxid,"Dwelling","Other")) %>% 
-  select(-n_rows,-n_year, -osds_flag) #6556
-
-# write_csv(iws_hi_permits_easyscenario,
-#          file.path(driver_dir,"4_OSDS_N_Runoff/output-data/iws_hi_permits_easyscenario.csv"),
-#          append = FALSE)
-
-# other one building scenarios:
-
-medium_tmks <- address_per_tmk_flag %>% 
-  filter(building_permit_scenario == "One buidling, multiple permits") # 115
-
-iws_hi_permits_MEDscenario <- iws_hi_permits_withclass_distinct %>% 
-  filter(tmk %in% medium_tmks$full_taxid) %>% 
-  select(-starts_with("project"), -address_full) %>% # remove rows that have not been standaridized
-  mutate(dwell_flag = ifelse(full_taxid %in% iws_hi_dwell_join$full_taxid,"Dwelling","Other")) %>% 
-  filter(dwell_flag != "Other")
-
-iws_hi_permits_MEDscenario_dist <- iws_hi_permits_MEDscenario %>% distinct()
-
-# filter out hard and tricky 
-
-tricky_tmks <- address_per_tmk_flag %>% 
-  filter(building_permit_scenario == "Multiple buildings, Mulitple permits" & year_scenario == "All the same year") # 38
-
-iws_hi_permits_TRICKYscenario <- iws_hi_permits_withclass_distinct %>% 
-  filter(tmk %in% tricky_tmks$full_taxid) %>% 
-  select(-starts_with("project"), -address_full) %>% 
-  mutate(dwell_flag = ifelse(full_taxid %in% iws_hi_dwell_join$full_taxid,"Dwelling","Other")) %>% 
-  filter(dwell_flag != "Other") # 35
-
-hard_tmks <- address_per_tmk_flag %>% 
-  filter(building_permit_scenario == "Multiple buildings, Mulitple permits" & year_scenario == "Mulitple Years") #109
-
-```
-
-**Results!**
-- 6556 are one building, one permit. Yay! this matches what we got above
-- 147 of the permits are for tmks with multiple buildings
-- 38 of those tmks applied for their permits all in the same year
-- 109 of those tmks applied for permits over more than one year
-- 115 are for one building, but either multiple permits in the same year (N = 93) or over multiple years (N = 22)
-
-### Step 5: Extra Wrangling Steps for Medium and Tricky Scenarios
-
-#### Medium & Tricky: 
-- If the class is the same, treat as just one class and sum all the bedrooms
-- If different classes, then distribute classes evenly
-
-
-```{r}
-
-# first put all the tricky and medium together. Then figure out:
-# - total qty
-# - if the total qty are of the same class 
-# - if there are two classes in the same year --> additive encoding. OR, upgrade?
-# - bedroom calculation to "distribute" among classes will be using mode
-
-tmklist1_table1 <- rbind(iws_hi_permits_MEDscenario_dist, iws_hi_permits_TRICKYscenario) %>% distinct()
-
-length(unique(tmklist1_table1$tmk)) # 82 unique tmks
-
-# filter dwell data for medium tmks, sum up bedrooms and bath per tmk per year
-
-tmklist1_bedbath <- allyears_hi_dwell %>% filter(full_taxid %in% tmklist1_table1$tmk)
-length(unique(tmklist1_table2$full_taxid)) # 82 unique tmks, great!
-tmklist1_table2 <- tmklist1_bedbath %>%
-  group_by(full_taxid,taxyr) %>% 
-  mutate(rmbed = as.numeric(rmbed)) %>% # check nas
-  
+table2a_bedrooms <- allyears_hi_dwell %>%
+  filter(full_taxid %in% master_clean$full_taxid) %>%
+  mutate(rmbed = as.numeric(rmbed)) %>%
+  group_by(full_taxid, taxyr) %>%
   summarize(
-    all_beds_pertmk = sum(rmbed, na.rm = T)
-  ) %>% 
-  pivot_wider(id_cols = full_taxid,
-              names_from = taxyr,
-              values_from = all_beds_pertmk,
-              names_sort = T)
+    total_beds = sum(rmbed, na.rm = TRUE),
+    # mode_beds = calc_mode(rmbed, na.rm = TRUE), # Uncomment if you want mode instead
+    .groups = "drop"
+  ) %>%
+  pivot_wider(names_from = taxyr, values_from = total_beds, names_sort = TRUE)
 
-#nas <- filter(tmklist1_table2, is.na(all_beds_pertmk)) # none great,
 
-# make sure the tmks are the same
+table2b_bedrooms <- allyears_hi_dwell %>%
+  filter(full_taxid %in% master_clean$full_taxid) %>%
+  mutate(rmbed = as.numeric(rmbed)) %>%
+  group_by(full_taxid, taxyr) %>%
+  summarize(
+    #total_beds = sum(rmbed, na.rm = TRUE),
+    mode_beds = calc_mode(rmbed, na.rm = TRUE), # Uncomment if you want mode instead
+    .groups = "drop"
+  ) %>%
+  pivot_wider(names_from = taxyr, values_from = mode_beds, names_sort = TRUE)
 
-setdiff(unique(tmklist1_table1$tmk),unique(tmklist1_table2$full_taxid)) # 0 yay
+#### TABLE 3 ####
 
-# table three - first make a flag if different class, and a column with which classes. then do additive encoding, then pivot wider.
+table3_classes <- master_clean %>%
+  group_by(full_taxid, year) %>%
+  summarize(
+    all_classes_text = paste(sort(unique(osds_class)), collapse = ", "),
+    .groups = "drop"
+  ) %>%
+  mutate(encoded_sum = 
+    (str_detect(all_classes_text, "1") * 1) +
+    (str_detect(all_classes_text, "2") * 2) +
+    (str_detect(all_classes_text, "3") * 4) +
+    (str_detect(all_classes_text, "4") * 8)
+  ) %>%
+  select(full_taxid, year, encoded_sum) %>%
+  pivot_wider(names_from = year, values_from = encoded_sum, names_sort = TRUE)
 
-tmklist1_classflag <- tmklist1_table1 %>%
-  group_by(full_taxid,year) %>% 
-  mutate(
-    class_conflict = n_distinct(osds_class) > 1,
-    all_classes = paste(sort(unique(osds_class)), collapse = ", ")) %>% 
-  ungroup() %>% 
-  mutate(osds_class_enc = 
-    (str_detect(all_classes, "1") * 1) +
-    (str_detect(all_classes, "2") * 2) +
-    (str_detect(all_classes, "3") * 4) +
-    (str_detect(all_classes, "4") * 8)
-  )
+# Filter out Commercial, ie dwell = no
 
-tmklist1_table3 <- tmklist1_classflag %>% 
-  select(full_taxid,year,osds_class_enc) %>% 
-  distinct() %>% 
-  pivot_wider(id_cols = full_taxid,names_from = year,values_from = osds_class_enc, names_sort = T)
-  
-  
-write_csv(tmklist1_table1,
-          file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/hi_tables/hi_list2_table1.csv"))
+table1_tmk_registry_commercial <- table1_tmk_registry %>% 
+  filter(is_dwelling == FALSE)
 
-write_csv(tmklist1_table2,
-          file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/hi_tables/hi_list2_table2.csv"))
 
-write_csv(tmklist1_table3,
-          file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/hi_tables/hi_list2_table3.csv"))
+### Save
+
+write_csv(table1_tmk_registry,
+          file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/hi_tables/table1_tmk_registry_all.csv"))
+
+write_csv(table2a_bedrooms,
+          file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/hi_tables/table2a_bedrooms_sum.csv"))
+
+write_csv(table2b_bedrooms,
+          file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/hi_tables/table2b_bedrooms_mode.csv"))
+
+write_csv(table3_classes,
+          file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/hi_tables/table3_class_allcsv"))
 
 
 ```
 
-#### Hard (tmk list 3): 
-- these are tricky because we have mulitple osds and multiple years, making it hard to know if there are updates. 
-- for these, I am going to use additive encoding+ mode of bedrooms.
-- also create a class and bedroom flag for the id table
-
-```{r}
-hard_tmks <- address_per_tmk_flag %>% 
-  filter(building_permit_scenario == "Multiple buildings, Mulitple permits" & year_scenario == "Mulitple Years") #109
-
-iws_hi_permitsHARDsceanrio <- iws_hi_permits_withclass_distinct %>% 
-  filter(tmk %in% hard_tmks$full_taxid) %>% 
-  select(-starts_with("project"), -address_full) %>% 
-  mutate(dwell_flag = ifelse(full_taxid %in% iws_hi_dwell_join$full_taxid,"Dwelling","Other")) %>% 
-  filter(dwell_flag != "Other")
-
-# how many unique tmks?
-length(unique(iws_hi_permitsHARDsceanrio$tmk)) # 81
-
-# create our three tables. note, the id table should contain all relevant flags
-
-tmklist3_table1 <- iws_hi_permitsHARDsceanrio %>% 
-  distinct() %>% 
-  mutate(tmk = as.character(tmk))
-
-length(unique(tmklist3_table1$tmk)) # 81 unique tmks
-
-## table 2 - here I created mode and median
-tmklist3_bedbath <- allyears_hi_dwell %>% filter(full_taxid %in% tmklist3_table1$tmk)
-length(unique(tmklist3_bedbath$full_taxid)) # 81 unique tmks, great!
-
-tmklist3_bedbathsumm <- tmklist3_bedbath %>%
-  group_by(full_taxid,taxyr) %>% 
-  mutate(rmbed = as.numeric(rmbed)) %>% # check nas
-  summarize(
-    all_beds_pertmk = sum(rmbed, na.rm = T),
-    mode_beds = calc_mode(rmbed, na.rm = T)
-  )
-
-
-tmklist3_table2 <- tmklist3_bedbathsumm %>% 
-  pivot_wider(id_cols = full_taxid,
-              names_from = taxyr,
-              values_from = all_beds_pertmk,
-              names_sort = T)
-
-tmklist3_table2b <- tmklist3_bedbathsumm %>% 
-  pivot_wider(id_cols = full_taxid,
-              names_from = taxyr,
-              values_from = mode_beds,
-              names_sort = T)
-
-
-# table 3 
-
-tmklist3_classflag <- tmklist3_table1 %>%
-  group_by(full_taxid,year) %>% 
-  mutate(
-    class_conflict = n_distinct(osds_class) > 1,
-    all_classes = paste(sort(unique(osds_class)), collapse = ", ")) %>% 
-  ungroup() %>% 
-  mutate(osds_class_enc = 
-    (str_detect(all_classes, "1") * 1) +
-    (str_detect(all_classes, "2") * 2) +
-    (str_detect(all_classes, "3") * 4) +
-    (str_detect(all_classes, "4") * 8)
-  )
-
-tmklist3_table3 <- tmklist3_classflag %>% 
-  select(full_taxid,year,osds_class_enc) %>% 
-  distinct() %>% 
-  pivot_wider(id_cols = full_taxid,names_from = year,values_from = osds_class_enc, names_sort = T)
-
-# join class flag to table 1. table 1 should also be cleaned up to only have one row per tmk
-# add column for year
-
-tmklist3_table1_complete <- tmklist3_classflag %>% 
-  select(tmk = full_taxid, year, class_conflict, all_classes, address_lower, approval_date) %>% 
-  right_join(.,tmklist3_table1, by = c("tmk", "year","address_lower","approval_date")) %>% 
-  distinct()
-  
-tmklist3_table1_onetmk <- tmklist3_table1_complete %>% 
-  group_by(tmk) %>% 
-  mutate(all_years = paste(sort(unique(year)), collapse = ",")) %>%
-  select(-permit_type,-disposal_type,-approval_date,-final_approval_date, -full_taxid, -address_lower,-year) %>% 
-  distinct()
-
-
-# come back to this - save both table 1 and the table1 one tmk
-
-write_csv(tmklist3_table1,
-          file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/hi_tables/hi_list3_table1a.csv"))
-
-write_csv(tmklist3_table1_onetmk,
-          file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/hi_tables/hi_list3_table1b_oneishtmk.csv"))
-
-write_csv(tmklist3_table2,
-          file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/hi_tables/hi_list2a_table2_bedsum.csv"))
-write_csv(tmklist3_table2,
-          file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/hi_tables/hi_list2b_table2_bedmode.csv"))
-
-write_csv(tmklist1_table3,
-          file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/hi_tables/hi_list2_table3_class.csv"))
-  
-
-```
-
-So because we are collapsing classes
-
+Ok so this works beautifully in that the bedroom table does not include any commercial tmks. Those will have their own table, which will specify "place", which dictates effluent, which 
 
 ## Compare to Past Datasets to Complete the Time Series
-
-We have to bring in the past OSDS dataset to have a record of what each
-tmk was bedroom wise and class wise prior to 2009 (which is when our
-permit data starts). Without it, we can only track changes and upgrades
-within the 2009 - 2020. Weʻll add this as a column. Once we do this, we
-can generate cesspool upgrade list.
-
-There are two main categories of comparison from Step 2; 
-- Easy situations where we have one building, one permit per tmk 
-- More complex ones.
-
-### A) EASY scenario compare to OTP (2010 timestamp)
-
-Let's start with the **easy list**. We'll read in the old OSDS dataset and
-assume that what ever is recorded for that tmk in there is what it was
-before 2010. If our new dataset has something different, we know its
-changed. Important Assumption from Julia's work: if a location goes from
-septic, or better, to CESSPOOL is probably wrong?
-
-First read in most recently available data for Hawaii and Explore:
 
 ```{r}
 
@@ -984,72 +677,18 @@ The `osds_class` column also does not have any 4s, just 1-3, and -9999. I'll use
 | Class 2 + Class 3 + Class 4           | 14  |
 | Class 1 + Class 2 + Class 3 + Class 4 | 15  |
 
+
+
 ```{r}
 library(janitor)
 
 hi_otp_clean <- hi_otp %>% 
   clean_names() %>% 
-  select(tmk, starts_with("class"), "osds_qty") # n = 13351 !
+  select(tmk, starts_with("class"), "osds_qty") # n = 13351 
 
-# read in the "easy scenario" new data, which are examples of one building and one permit TMKS. check for any duplciates
+# apply additive encoding to match what we did with the new data
 
-onebuilding_onepermit <- read.csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/iws_hi_permits_easyscenario.csv"))
-
-onebuilding_onepermit_distinct <- onebuilding_onepermit %>% 
-  select(-permit_id) %>% 
-  distinct() # none, cool!
-
-
-
-
-# -----------  Q1:  do all these new ones exist in the old data? if not, then they are NEW osds builds ------------- #
-
-otp_hi_filtered_byOBOP <- hi_otp_clean %>% 
-  mutate(tmk = as.integer(tmk)) %>% 
-  filter(tmk %in% onebuilding_onepermit$tmk) %>% 
-  distinct() %>% # KEY: remove EXACT duplicates. We are treating these as errors
-  rowid_to_column("newbuild_permit_id") %>% 
-  mutate(year_issued = 2010) %>% # note this isn't right, just a place hodler for "pre 2010" to maintain consistent data structure in this column 
-  mutate(change_flag = "new permit detected since otp") #2337
-
-
-otp_kauai_NOTinOBOP <- hi_otp_clean %>%
-  mutate(tmk = as.integer(tmk)) %>% 
-  filter(tmk %!in% onebuilding_onepermit$tmk) %>% 
-  rowid_to_column("old_permit_id") %>% 
-  mutate(change_flag = "no new permit application since otp") 
-  
-
-write_csv(otp_kauai_NOTinOBOP,
-          file.path(driver_dir,"4_OSDS_N_Runoff/output-data/otp_osds_wo_permitupgrade_hi.csv")) 
-
-
-# -----------  Q2:  Which of the new builds are new OSDS, rather than builds on tmks with existing OSDS? ------------- #
-
-
-onebuilding_onepermit_NEW_since2010 <- onebuilding_onepermit %>% 
-  filter(tmk %!in% otp_hi_filtered_byOBOP$tmk) # 4219?? wow
-
-length(unique(onebuilding_onepermit_NEW_since2010$tmk)) #4219 
-
-# use set diff to see if its the same
-tmks_not_inbob <- setdiff(onebuilding_onepermit$tmk, otp_hi_filtered_byOBOP$tmk) #4219 YAY
-
-onebuilding_onepermit_NEW_since2010_otherway <- onebuilding_onepermit %>% 
-  filter(tmk %in% tmks_not_inbob) 
-
-
-write_csv(onebuilding_onepermit_NEW_since2010_otherway,
-          file.path(driver_dir,"4_OSDS_N_Runoff/output-data/hi_osds_new_since_otp.csv"))
-
-# --------------- Old Data: Data Reshape ------------------------------------- #
-
-
-# Here I take the tmks present in OTP AND the new permit data, which represent upgrades. I reassign class to match the additive encoding schema, and then pivot wider. 
-
-
-
-otp_hi_filtered_byOBOP_wide <- otp_hi_filtered_byOBOP %>% 
+hi_otp_class_enc <- hi_otp_clean %>% 
   select(-class) %>% 
   pivot_longer(cols = starts_with("class"), names_to = "class", values_to = "quantity") %>% 
   filter(quantity != 0) %>% 
@@ -1060,15 +699,70 @@ otp_hi_filtered_byOBOP_wide <- otp_hi_filtered_byOBOP %>%
     class == "class_ii" ~ 2,
     class == "class_i" ~ 1
   )) %>%
-  pivot_wider(id_cols = c("newbuild_permit_id","tmk","ttl_osds_2010"), 
-              names_from = c("year_issued","class"), values_from = c("quantity"))
+  pivot_wider(id_cols = c("tmk","ttl_osds_2010"), names_from = "class", values_from = c("osds_class_otp")) %>%
+  mutate(encoded_sum = rowSums(across(starts_with("class")), na.rm = TRUE))
+  
+
+# read in table 1. 
+
+IWS_table1_tmk_registry <- read.csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/hi_tables/table1_tmk_registry_all.csv"))
 
 
+# Step 1: Split into three groups: NEW, UPDATED and UNCHANGED
 
-dups_check <- otp_hi_filtered_byOBOP_wide %>% mutate(duplicated = duplicated(tmk)) # none
+otp_with_updates <- hi_otp_class_enc %>% 
+  mutate(tmk = as.integer(tmk)) %>% 
+  filter(tmk %in% IWS_table1_tmk_registry$full_taxid) # 2050 # add flag
 
-otp_hi_morethan1osds <- otp_hi_filtered_byOBOP_wide %>% 
-  filter(ttl_osds_2010 > 1) #311
+
+otp_unchanged <- hi_otp_class_enc %>% 
+  mutate(tmk = as.integer(tmk)) %>% 
+  filter(tmk %!in% IWS_table1_tmk_registry$full_taxid) # 51009
+
+
+new_permits <- IWS_table1_tmk_registry %>% 
+  filter(full_taxid %!in% hi_otp_class_enc) # 6816 # flag
+
+# add flags to the tmk registry in table 1 for updates and new. 
+
+IWS_table1_tmk_registry_wflags <- IWS_table1_tmk_registry %>% 
+  mutate(status_since_otp = case_when(
+    full_taxid %!in% otp_with_updates$tmk ~ "new permit application",
+    full_taxid %in% otp_with_updates$tmk ~ "exists in otp",
+    TRUE ~ "Z"
+  ))
+
+
+# --------------- Unchanged Data: Data Reshape and Merge ------------------------------------- #
+
+# Here I take the tmks present in OTP that have not changed and reshape it to match the table 1, table 2 and table 3 datasets above. Add a flag, and then join to the rest. Columsn we need:
+
+# - tmk
+# - n permits (this is captured in the encoding)
+# - n years (all one)
+# - n addresses - we dont have address but we do have pittcodes
+# - min and max year = 2009
+# - dwelling flag = get from old data
+# - scenario
+# - status since otp = unchanged 
+
+
+otp_unchanged_allinfo <- hi_otp %>%
+  mutate(tmk = as.integer(tmk)) %>% 
+  filter(tmk %in% otp_unchanged$tmk) %>% 
+  select(tmk, commercial, pittcode, ttl_bdrms, no_struct) %>% 
+  left_join(., otp_unchanged, by = "tmk") %>% 
+  select(-starts_with("class")) %>% 
+  mutate(year = 2010)
+
+
+otp_unchanged_table1 <- otp_unchanged_allinfo
+  
+  
+# next, grab 2010 from table 3 and 2 to compare
+  
+  
+
 
 # now, add the encoding 
 
@@ -1090,7 +784,7 @@ otp_hi_filtered_byOBOP_longENC <- otp_hi_filtered_byOBOP_wideENC %>% # collapse 
   select(-starts_with("2010"), -newbuild_permit_id)
 
 
-# --------------- New Data: Data Reshape ------------------------------------- #
+# --------------- New Data Since: Clean, flag updates ------------------------------------- #
 
 
 # now pivot the NEW data, for now just the "easy", that is also in OTP, one building one permit category, wider to match
@@ -1104,7 +798,7 @@ onebuild_onepermit_hi_wide <- onebuild_onepermit_inbob %>%
 dups_obop_hi <- onebuild_onepermit_hi_wide %>% mutate(duplicated = duplicated(tmk)) # no duplicates. great. 
 
 
-# -------------- Combine:  Join our two wide tables together ----------------------------------- #
+# -------------- Combine  ----------------------------------- #
 
 # IMPORTANT note: since 493 of the bob data have more than one OSDS, but the new data here are examples of just one building, one new permit, if any of the new data match to the old ones with more than one osds, weʻll have to make an assumption about which one was updated in this new data. 
 
