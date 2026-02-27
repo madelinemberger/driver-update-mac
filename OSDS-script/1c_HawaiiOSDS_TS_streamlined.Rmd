@@ -563,7 +563,8 @@ table2a_bedrooms <- allyears_hi_dwell %>%
     # mode_beds = calc_mode(rmbed, na.rm = TRUE), # Uncomment if you want mode instead
     .groups = "drop"
   ) %>%
-  pivot_wider(names_from = taxyr, values_from = total_beds, names_sort = TRUE)
+  pivot_wider(names_from = taxyr, values_from = total_beds, names_sort = TRUE) %>% 
+  rename(tmk = full_taxid)
 
 
 table2b_bedrooms <- allyears_hi_dwell %>%
@@ -575,7 +576,8 @@ table2b_bedrooms <- allyears_hi_dwell %>%
     mode_beds = calc_mode(rmbed, na.rm = TRUE), # Uncomment if you want mode instead
     .groups = "drop"
   ) %>%
-  pivot_wider(names_from = taxyr, values_from = mode_beds, names_sort = TRUE)
+  pivot_wider(names_from = taxyr, values_from = mode_beds, names_sort = TRUE) %>% 
+  rename(tmk = full_taxid)
 
 #### TABLE 3 ####
 
@@ -723,14 +725,15 @@ otp_unchanged <- hi_otp_class_enc %>%
 new_permits <- IWS_table1_tmk_registry %>% 
   filter(full_taxid %!in% hi_otp_class_enc) # 6816 # flag
 
-# add flags to the tmk registry in table 1 for updates and new. 
+# add flags to the tmk registry in table 1 for UPDATES and NEW. 
 
 IWS_table1_tmk_registry_wflags <- IWS_table1_tmk_registry %>% 
   mutate(status_since_otp = case_when(
     full_taxid %!in% otp_with_updates$tmk ~ "new permit application",
     full_taxid %in% otp_with_updates$tmk ~ "exists in otp",
     TRUE ~ "Z"
-  ))
+  )) %>% 
+  rename(tmk = full_taxid)
 
 
 # --------------- Unchanged Data: Data Reshape and Merge ------------------------------------- #
@@ -756,97 +759,73 @@ otp_unchanged_allinfo <- hi_otp %>%
   mutate(year = 2010)
 
 
-otp_unchanged_table1 <- otp_unchanged_allinfo
-  
-  
-# next, grab 2010 from table 3 and 2 to compare
-  
-  
-
-
-# now, add the encoding 
-
-otp_hi_filtered_byOBOP_wideENC <- otp_hi_filtered_byOBOP %>% 
-  select(-class) %>% 
-  pivot_longer(cols = starts_with("class"), names_to = "class", values_to = "quantity") %>% 
-  filter(quantity != 0) %>% 
-  rename(ttl_osds_2010 = osds_qty) %>% 
-  mutate(osds_class_otp = case_when(
-    class == "class_iv" ~ 8, # cesspool 
-    class == "class_iii" ~ 4,
-    class == "class_ii" ~ 2,
-    class == "class_i" ~ 1
-  )) %>%
-  pivot_wider(id_cols = c("newbuild_permit_id","tmk","ttl_osds_2010"), names_from = c("year_issued","class"), values_from = c("osds_class_otp")) %>%
-  mutate(combo_code = rowSums(across(starts_with("2010")), na.rm = TRUE))
-
-otp_hi_filtered_byOBOP_longENC <- otp_hi_filtered_byOBOP_wideENC %>% # collapse the wide columns
-  select(-starts_with("2010"), -newbuild_permit_id)
-
-
-# --------------- New Data Since: Clean, flag updates ------------------------------------- #
-
-
-# now pivot the NEW data, for now just the "easy", that is also in OTP, one building one permit category, wider to match
-
-onebuild_onepermit_inbob <- onebuilding_onepermit%>% 
-  filter(tmk %in% otp_hi_filtered_byOBOP$tmk)
-
-onebuild_onepermit_hi_wide <- onebuild_onepermit_inbob %>% 
-  pivot_wider(id_cols = c("permit_id","tmk"), names_from = "year", values_from = c("permit_type","osds_class"))
-
-dups_obop_hi <- onebuild_onepermit_hi_wide %>% mutate(duplicated = duplicated(tmk)) # no duplicates. great. 
-
-
-# -------------- Combine  ----------------------------------- #
-
-# IMPORTANT note: since 493 of the bob data have more than one OSDS, but the new data here are examples of just one building, one new permit, if any of the new data match to the old ones with more than one osds, weʻll have to make an assumption about which one was updated in this new data. 
-
-all_osds_present_inboth <- left_join(dups_obop_hi, otp_hi_filtered_byOBOP_longENC, by = c("tmk"))
-
-# so the next analysis will determine the most recent year a tmk was upgraded. We can add a flag for if there was an upgrade and there are multiple OSDS on the property. hoping that most of these did not have an upgrade. 
-
-
-all_permit_present_inboth_long <- all_osds_present_inboth %>% 
-  rename(otp_class_2010 = combo_code) %>% # this is what it was in 2010
-  select(-starts_with("permit_type")) %>% # we dont need this right now
-  pivot_longer(cols = starts_with("osds"),
-               names_to = "year",
-               values_to = "class",
-               values_drop_na = TRUE) %>% 
-  mutate(
-    year_num = as.integer(str_remove(year, "osds_class_"))  # extract numeric year rather than colname with year in it
-  )
-
-
-# here we'll use some logic to create a yes/no flag if upgraded, and a specific text flag for what kind of upgrade it was 
-
-
-last_permit_persentinboth <- all_permit_present_inboth_long %>% 
-  group_by(tmk) %>% 
-  slice_max(year_num, n = 1, with_ties = FALSE) %>% # get the latest year we have records for a given tmk
-  mutate(class_last = as.numeric(class),
-         class_last_year = year_num,
-         class_otp = as.numeric(otp_class_2010)) %>% 
-  mutate(upgrade_yn = case_when(
-    class_last < class_otp & class_otp %in% c(1,2,4,8) ~ "upgrade occured on a single osds",
-    class_last < class_otp & class_otp %!in% c(1,2,4,8) ~ "change occured on one of many existing osds",
-    class_last == class_otp & class_otp %in% c(1,2,4,8) & class_last_year > 2010 ~ "addition",
-    class_last == class_otp & class_otp %in% c(1,2,4,8) & class_last_year <= 2010 ~ "data overlap",
-    class_last > class_otp  ~ "check class assignment"
+otp_unchanged_table1 <- otp_unchanged_allinfo %>% 
+  mutate(n_permits = case_when(
+    encoded_sum %in% c(1,2,4,8) ~ 1,
+    encoded_sum %in% c(3,5,6,9,10,12) ~ 2,
+    encoded_sum %in% c(7,11,13,14) ~ 3,
+    encoded_sum == 15 ~ 4,
+    TRUE ~ 99999
   )) %>% 
-  mutate(cesspool_upgrade = case_when(
-    class_otp == 8 & class_last < 4 ~ "cesspool upgraded",
-    class_otp %in% c(9,10,11,12,13,14,15) & class_last < 4 ~ "maybe cesspool upgraded - multiple existing osds",
-    class_last == 4 & class_last_year > 2010 ~ "new cesspool permit",
-    class_otp == 4 & class_last == 4 & class_last_year %in% c(2009,2010) ~ "duplicate, not upgraded",
-    class_otp %!in% c(9,10,11,12,13,14,15) ~ "na"
-  ))
+  mutate(n_years = 1,
+         n_addresses = "unknown",
+         min_year = 2010,
+         max_year = 2010,
+         is_dwelling = ifelse(commercial == "Apartment/condo" | is.na(commercial),
+                              TRUE,FALSE)) %>%
+  mutate(
+      scenario = case_when(
+      n_permits == 1 & n_years == 1 ~ "Simple",
+      n_addresses == "unknown" ~ "Unknown",
+      n_years > 1 ~ "Potential Upgrade",
+      TRUE ~ "Multiple Permits Same Year"
+    ),
+    status_since_otp = "unchanged since otp") %>% 
+  select(-commercial, -pittcode,-ttl_bdrms, -no_struct, -ttl_osds_2010,-year,-encoded_sum)
+
+otp_unchanged_table2ab <- otp_unchanged_allinfo %>% 
+  select(tmk,year, ttl_bdrms) %>% 
+  pivot_wider(id_cols = tmk,names_from = year, values_from = ttl_bdrms) %>% 
+  mutate(tmk = as.character(tmk))
+  
+otp_unchanged_table3 <- otp_unchanged_allinfo %>% 
+  select(tmk,year, encoded_sum) %>% 
+  pivot_wider(id_cols = tmk,names_from = year, values_from = encoded_sum)
+  
+
+# merge in with the IWS permits 
+new_and_unchanged_tmk_registry <- rbind(IWS_table1_tmk_registry_wflags,otp_unchanged_table1) %>% 
+  distinct() # this shouldnt drop any rows. yay!
+
+new_and_unchanged_table2 <- bind_rows(otp_unchanged_table2ab, table2a_bedrooms) # does not include commercial 
+  
+new_and_unchanged_table3 <- bind_rows(otp_unchanged_table3, table3_classes). # includes commercial
 
 
-# save! remember, we need to do this for the tricky and hard scenarios, and non dwells, as well
-write_csv(last_permit_persentinboth,
-          file.path(driver_dir,"4_OSDS_N_Runoff/output-data/hi_easy_possible_OSDSupgrades_withflag.csv"))
+# --------------- Updated Data: Compare, Reshape Merge ------------------------------------- #
+
+# so my suspicion is that these are mostly accounted for in the new data because we requested back to 2010. 
+
+# pivot this wider and check:
+# - if all tmks are in the iws registry
+# -re name columns to clarity they are from otp era
+# - compare with new data
+# create flag of scenario: update, and specificlly call out cesspool update
+
+otp_UPDATED_allinfo <- hi_otp %>%
+  mutate(tmk = as.integer(tmk)) %>% 
+  filter(tmk %in% otp_with_updates$tmk) %>% 
+  select(tmk, commercial, pittcode, ttl_bdrms, no_struct) %>% 
+  left_join(., otp_with_updates, by = "tmk") %>% 
+  select(-starts_with("class")) %>% 
+  mutate(year = 2010)
+
+
+
+
+# --------------------Create table 4: Commercial Locations -------------------------------- #
+
+
 
 ```
 
@@ -876,8 +855,6 @@ cesspool_upgrade_tally <-  last_permit_persentinboth %>%
   summarize(
     total_n = n()
   )
-
-
 
 ```
 
@@ -1069,5 +1046,103 @@ Here, we'll just make sure that what I did for these using new data doesn't conf
 
 
 
+```
+
+# OLD CODE
+
+```{r}
+
+
+# --------------- OTP Data: Data Reshape and Merge ------------------------------------- #
+# first, check if the only year in "new" is 2010 or 2009. Repeat data.
+
+
+
+
+# now, add the encoding 
+
+otp_hi_filtered_byOBOP_wideENC <- otp_hi_filtered_byOBOP %>% 
+  select(-class) %>% 
+  pivot_longer(cols = starts_with("class"), names_to = "class", values_to = "quantity") %>% 
+  filter(quantity != 0) %>% 
+  rename(ttl_osds_2010 = osds_qty) %>% 
+  mutate(osds_class_otp = case_when(
+    class == "class_iv" ~ 8, # cesspool 
+    class == "class_iii" ~ 4,
+    class == "class_ii" ~ 2,
+    class == "class_i" ~ 1
+  )) %>%
+  pivot_wider(id_cols = c("newbuild_permit_id","tmk","ttl_osds_2010"), names_from = c("year_issued","class"), values_from = c("osds_class_otp")) %>%
+  mutate(combo_code = rowSums(across(starts_with("2010")), na.rm = TRUE))
+
+otp_hi_filtered_byOBOP_longENC <- otp_hi_filtered_byOBOP_wideENC %>% # collapse the wide columns
+  select(-starts_with("2010"), -newbuild_permit_id)
+
+
+# --------------- New Data Since: Clean, flag updates ------------------------------------- #
+
+
+# now pivot the NEW data, for now just the "easy", that is also in OTP, one building one permit category, wider to match
+
+onebuild_onepermit_inbob <- onebuilding_onepermit%>% 
+  filter(tmk %in% otp_hi_filtered_byOBOP$tmk)
+
+onebuild_onepermit_hi_wide <- onebuild_onepermit_inbob %>% 
+  pivot_wider(id_cols = c("permit_id","tmk"), names_from = "year", values_from = c("permit_type","osds_class"))
+
+dups_obop_hi <- onebuild_onepermit_hi_wide %>% mutate(duplicated = duplicated(tmk)) # no duplicates. great. 
+
+
+# -------------- Combine  ----------------------------------- #
+
+# IMPORTANT note: since 493 of the bob data have more than one OSDS, but the new data here are examples of just one building, one new permit, if any of the new data match to the old ones with more than one osds, weʻll have to make an assumption about which one was updated in this new data. 
+
+all_osds_present_inboth <- left_join(dups_obop_hi, otp_hi_filtered_byOBOP_longENC, by = c("tmk"))
+
+# so the next analysis will determine the most recent year a tmk was upgraded. We can add a flag for if there was an upgrade and there are multiple OSDS on the property. hoping that most of these did not have an upgrade. 
+
+
+all_permit_present_inboth_long <- all_osds_present_inboth %>% 
+  rename(otp_class_2010 = combo_code) %>% # this is what it was in 2010
+  select(-starts_with("permit_type")) %>% # we dont need this right now
+  pivot_longer(cols = starts_with("osds"),
+               names_to = "year",
+               values_to = "class",
+               values_drop_na = TRUE) %>% 
+  mutate(
+    year_num = as.integer(str_remove(year, "osds_class_"))  # extract numeric year rather than colname with year in it
+  )
+
+
+# here we'll use some logic to create a yes/no flag if upgraded, and a specific text flag for what kind of upgrade it was 
+
+
+last_permit_persentinboth <- all_permit_present_inboth_long %>% 
+  group_by(tmk) %>% 
+  slice_max(year_num, n = 1, with_ties = FALSE) %>% # get the latest year we have records for a given tmk
+  mutate(class_last = as.numeric(class),
+         class_last_year = year_num,
+         class_otp = as.numeric(otp_class_2010)) %>% 
+  mutate(upgrade_yn = case_when(
+    class_last < class_otp & class_otp %in% c(1,2,4,8) ~ "upgrade occured on a single osds",
+    class_last < class_otp & class_otp %!in% c(1,2,4,8) ~ "change occured on one of many existing osds",
+    class_last == class_otp & class_otp %in% c(1,2,4,8) & class_last_year > 2010 ~ "addition",
+    class_last == class_otp & class_otp %in% c(1,2,4,8) & class_last_year <= 2010 ~ "data overlap",
+    class_last > class_otp  ~ "check class assignment"
+  )) %>% 
+  mutate(cesspool_upgrade = case_when(
+    class_otp == 8 & class_last < 4 ~ "cesspool upgraded",
+    class_otp %in% c(9,10,11,12,13,14,15) & class_last < 4 ~ "maybe cesspool upgraded - multiple existing osds",
+    class_last == 4 & class_last_year > 2010 ~ "new cesspool permit",
+    class_otp == 4 & class_last == 4 & class_last_year %in% c(2009,2010) ~ "duplicate, not upgraded",
+    class_otp %!in% c(9,10,11,12,13,14,15) ~ "na"
+  ))
+
+
+# save! remember, we need to do this for the tricky and hard scenarios, and non dwells, as well
+write_csv(last_permit_persentinboth,
+          file.path(driver_dir,"4_OSDS_N_Runoff/output-data/hi_easy_possible_OSDSupgrades_withflag.csv"))
+
+```
 ```
 
