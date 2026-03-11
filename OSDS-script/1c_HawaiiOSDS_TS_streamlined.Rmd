@@ -463,9 +463,9 @@ write_csv(iws_hi_NOdwell,
 
 Instead of doing a bunch of stuff that identifies easy, tricky and hard scenarios, I'm condensing everything here into one big clean. 
 are as follows: 
-1. Create a flag that flags if a TMK is repeated in the
-same year or different year 
-2. 
+1. Assign class, using a custom function
+2. Create master list (table 1)
+3. Create tables 2 and 3 based on master list. 
 
 ```{r}
 
@@ -475,12 +475,12 @@ library(janitor)
 
 
 ## osds class assignment function 
-# Define groups at the top of your script
+# Define disposal types 
 primary_disposal <- c("Bed", "Trench", "Infiltrators / Chambers", "ET Bed-Irrigation System", "Presby")
 minimal_disposal <- c("Seepage Pit", "Cesspool-New")
 unknown_disposal <- c("Other", "Unknown")
 
-# The Master Class Function
+# Class assignment function 
 assign_osds_class <- function(p_type, d_type) {
   case_when(
     p_type == "Septic Tank" & d_type %in% primary_disposal ~ "1",
@@ -807,19 +807,131 @@ new_and_unchanged_table3 <- bind_rows(otp_unchanged_table3, table3_classes). # i
 # so my suspicion is that these are mostly accounted for in the new data because we requested back to 2010. 
 
 # pivot this wider and check:
-# - if all tmks are in the iws registry
-# -re name columns to clarity they are from otp era
+# - if all tmks are in the iws registry (table 1)
+# -re name columns to clarify they are from otp era (done)
 # - compare with new data
-# create flag of scenario: update, and specificlly call out cesspool update
+# -  create flag of scenario: update, and specifically call out cesspool update
+
+
+# the goal is: 1) to see if we can use otp to fill in any missing info
+# 2) identify updates
 
 otp_UPDATED_allinfo <- hi_otp %>%
   mutate(tmk = as.integer(tmk)) %>% 
   filter(tmk %in% otp_with_updates$tmk) %>% 
   select(tmk, commercial, pittcode, ttl_bdrms, no_struct) %>% 
   left_join(., otp_with_updates, by = "tmk") %>% 
-  select(-starts_with("class")) %>% 
-  mutate(year = 2010)
+  select(-starts_with("class"), -pittcode, -no_struct) %>% 
+  mutate(year = 2010) %>% 
+  rename_with(., ~paste0("otp_",.x), .cols= !tmk)
 
+
+table_2_2010 <- table2a_bedrooms %>% 
+  rename_with(., ~paste0("NEW_beds",.x), .cols= !tmk)
+
+
+table_3_2010 <- table3_classes %>% 
+  rename(tmk = full_taxid) %>% 
+  rename_with(., ~paste0("NEW_class",.x), .cols= !tmk)
+
+# create a year match flag
+otp_updated_withIWS <- left_join(otp_UPDATED_allinfo, IWS_table1_tmk_registry_wflags, by = "tmk") %>% 
+  mutate(tmk = as.character(tmk)) %>% 
+  mutate(year_match = ifelse(max_year > 2010, "new permit app","no new permit since 2010"))
+
+# create a bed match flag
+otp_updated_withNEWbeds <- left_join(otp_UPDATED_allinfo, IWS_table1_tmk_registry_wflags, by = "tmk") %>% 
+  mutate(tmk = as.character(tmk)) %>% 
+  left_join(table_2_2010, by = "tmk") %>% 
+  rowwise() %>% 
+  mutate(
+    match_index = which(c_across(starts_with("NEW")) == otp_ttl_bdrms)[1],
+    match_name = names(select(ungroup(.), starts_with("NEW")))[match_index],
+    flag = case_when(
+      !is.na(match_index) ~ paste0("matches with ", match_name),
+      otp_ttl_bdrms < NEW_beds2010   ~ "expansion since otp",
+      otp_ttl_bdrms > NEW_beds2010   ~ "double check dwell data",
+      TRUE                ~ "unmatched"
+    )
+  )
+
+# fix disagreements in bedrooms or backfill missing data
+otp_unmatched_dwells <- otp_updated_withNEWbeds %>% 
+  filter(is_dwelling == TRUE,
+         flag == "unmatched") %>% 
+    mutate(
+    first_tax_val = c_across(starts_with("NEW"))[which(!is.na(c_across(starts_with("NEW"))) & c_across(starts_with("NEW")) > 0)[1]],
+    
+    # 2. CREATE THE FLAG: Compare A to that first tax record
+    shrinkage_amt = otp_ttl_bdrms - first_tax_val,
+    shrinkage_flag = case_when(
+      is.na(first_tax_val) ~ "No tax data to compare",
+      shrinkage_amt > 0     ~ paste0("Dropped by ", shrinkage_amt, " beds"),
+      shrinkage_amt < 0     ~ "Grew since baseline",
+      TRUE                  ~ "Consistent"
+    )
+  )
+
+
+# code to backfill
+
+  # pivot_longer(cols = starts_with("NEW"), 
+  #              names_to = "year_col", 
+  #              values_to = "bed_val") %>%
+  # group_by(tmk) %>% 
+  # mutate(
+  #   # find the first non-NA/non-zero value in the timeline
+  #   first_real_val = bed_val[which(bed_val > 0 & !is.na(bed_val))[1]],
+  #   
+  #   # find the position (index) of that first value
+  #   first_val_idx = which(bed_val > 0 & !is.na(bed_val))[1],
+  #   current_idx = row_number(),
+  #   
+  #   # 4. Apply the Logic
+  #   new_bed_val = case_when(
+  #     # If no real data exists at all for this tmk, use A
+  #     is.na(first_val_idx) ~ otp_ttl_bdrms,
+  #     
+  #     # If we are BEFORE the first real data point, use A
+  #     current_idx < first_val_idx ~ otp_ttl_bdrms,
+  #     
+  #     # If we are AT or AFTER the first real data point, 
+  #     # use the first real value to fill any NAs/zeros
+  #     current_idx >= first_val_idx & (is.na(bed_val) | bed_val == 0) ~ first_real_val,
+  #     
+  #     # Otherwise, keep the data as it is
+  #     TRUE ~ bed_val
+  #   )
+  # ) %>% 
+  # select(-bed_val, -first_real_val, -first_val_idx, -current_idx) %>%
+  # pivot_wider(names_from = year_col, values_from = new_bed_val) %>%
+  # ungroup() %>% 
+  # rowwise() %>%
+  # mutate(
+  #   first_tax_val = c_across(starts_with("NEW"))[which(!is.na(c_across(starts_with("NEW"))) & c_across(starts_with("newbeds")) > 0)[1]],
+  #   
+  #   # 2. CREATE THE FLAG: Compare A to that first tax record
+  #   shrinkage_amt = otp_ttl_bdrms - first_tax_val,
+  #   shrinkage_flag = case_when(
+  #     is.na(first_tax_val) ~ "No tax data to compare",
+  #     shrinkage_amt > 0     ~ paste0("Dropped by ", shrinkage_amt, " beds"),
+  #     shrinkage_amt < 0     ~ "Grew since baseline",
+  #     TRUE                  ~ "Consistent"
+  #   )
+  # ) %>%
+  # ungroup()
+  
+  
+
+
+# create class flags
+
+
+
+# back fill
+
+
+# bring everything together again
 
 
 
@@ -828,6 +940,36 @@ otp_UPDATED_allinfo <- hi_otp %>%
 
 
 ```
+
+
+Important: Logic for resolving between otp dataset and IWS permits.
+We want to preserve records of changes. There are a few types of mistmatches:
+1) years match, but permits don't
+2) years match, but bedrooms don't
+3) years match, but we are missing bedroom information that the old data has?
+
+Some text on the thinking so far: 
+
+Where OTP matched to ANY year in bedrooms, I just left as is for now.
+
+For dwellings that didnt match, i looked at the shrinkage amount: 
+**Housing Data Methodology**
+To construct a consistent 10-year longitudinal profile of residential capacity, we integrated historical bedroom counts (Column A) with contemporary annual tax assessment records (2000–2024). A primary challenge identified during data reconciliation was "negative bedroom growth," where tax-assessed bedroom counts were significantly lower (up to 4 rooms) than historical baselines. Given that tax assessments strictly adhere to legal building codes (e.g., egress and closet requirements), they often underrepresent informal or non-conforming living spaces. To maintain a realistic proxy for human habitation and land-use intensity, we implemented a "high-water mark" logic: historical values were used as a functional floor. This prevents artificial "capacity drops" in the timeline and ensures that unpermitted but occupied bedrooms—frequently found in local housing contexts—are captured in the longitudinal analysis.
+
+We found that for HI Island, there are 87 permit entries that have a smaller number of bedrooms in the Tax assessment data than in the OTP dataset. Most are different by 1 bedroom, but there are 2 that are different by 4. Spot checking these, they appear to be houses on homesteads. Therefore it is very possible that the tax assessment data is too conservative. 
+
+Dropped by 4 (N = 2)
+1) One is located at 32-068 Piha-Kahuku Rd. In the dwell data, we have year built at 2014 so it is possible that it was a 4 bed that was rebuilt to a 1 bed
+2) The other is located in the Hawaiian Mountain View Estates. This one could certainly be in a lava field, however it was tax assessed every year since 2010 so I am not going to assume it was in the lava area until spatialization later. 
+
+
+Dropped by 2 (N = 31)
+
+
+Dropped by 1 (N = 52)
+For these, none of the tax data shows up until 2013. It would be helpful to get the yr built for these. I am wondering if the "otp" data might be more recent than we realize. 
+There are a also a number of cases where the permit is old (2009, 2010) but the house assessment doesnt show up until later. I am wondering if these are examples of old ones that were taken out in lava flows, and then were rebuilt. In this case, we'd want to account for it using the OTP beds until lava, and then pick up whatever the tax data has in the meantime. 
+
 
 So there are a number here where there are more than one cesspool - we
 may want to make an assumption that if there is one new permit for
