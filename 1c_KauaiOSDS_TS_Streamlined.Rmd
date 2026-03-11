@@ -280,6 +280,12 @@ write_csv(table3_classes,
 
 ```
 
+Notes:
+- we can use yearbuilt to confirm where there should be NAS in the dwell database
+- what is the oldest yearbuilt for that TMK
+- we can add a multi building flag from CARDS, not just the permit data. 
+
+We need to figure out how to treat differences in the OTP versus my new data. 
 
 
 ### Step 3: Compare and Integrate Past Datasets
