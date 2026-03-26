@@ -1119,39 +1119,90 @@ otp_UPDATED_allinfo <- hi_otp %>%
 
 
 table_2_2010 <- table2a_bedrooms %>% 
-  rename_with(., ~paste0("NEW_beds",.x), .cols= !tmk)
+  rename_with(., ~paste0("new",.x), .cols= !tmk) %>% 
+    mutate(tmk = as.integer(tmk))
+
+# check: are all the "updated" tmks already in table 2?
+
+table2_updated <- table_2_2010 %>% filter(tmk %in% otp_UPDATED_allinfo$tmk) %>% 
+# no, missing a 262 (commercial) 
 
 
 table_3_2010 <- table3_classes %>% 
   #rename(tmk = full_taxid) %>% 
-  rename_with(., ~paste0("NEW_class",.x), .cols= !tmk)
+  rename_with(., ~paste0("new",.x), .cols= !tmk)
+
+table3_updated <- table3_classes %>% filter(tmk %in% otp_UPDATED_allinfo$tmk) # yes, all accounted for
 
 # create a year match flag
 otp_updated_withIWS <- left_join(otp_UPDATED_allinfo, IWS_table1_tmk_registry_wflags, by = "tmk") %>% 
   mutate(tmk = as.character(tmk)) %>% 
   mutate(year_match = ifelse(max_year > 2010, "new permit app","no new permit since 2010"))
 
-# create a bed match flag - NOTE I removed non dwells!
+# create some flags for different bedroom scenarios
 otp_updated_withNEWbeds <- left_join(otp_UPDATED_allinfo, IWS_table1_tmk_registry_wflags, by = "tmk") %>% 
-  filter(is_dwelling == TRUE) %>% 
-  left_join(table_2_2010, by = "tmk") %>% 
-  rowwise() %>% 
-  mutate(
-    match_index = which(c_across(starts_with("NEW")) == otp_ttl_bdrms)[1],
-    match_name = names(select(ungroup(.), starts_with("NEW")))[match_index],
-    flag = case_when(
-      !is.na(match_index) ~ paste0("matches with ", match_name),
-      otp_ttl_bdrms < NEW_beds2010   ~ "expansion since otp",
-      otp_ttl_bdrms > NEW_beds2010   ~ "double check dwell data", # N = 49
-      TRUE                ~ "unmatched" # N = 153
+  #filter(is_dwelling == TRUE) %>% 
+  left_join(table_2_2010, by = "tmk")
+
+
+year_cols <- otp_updated_withNEWbeds %>% select(starts_with("new")) %>% names()
+
+otp_updated_with_BEDflags <- otp_updated_withNEWbeds %>% mutate(
+     # CREATE MATCH INDEX: 
+    # This finds the index (1, 2, 3...) of the first column that matches OTP bedrooms
+    # We use matrix comparison (df[cols] == df$otp) to keep it vectorized
+    match_index = {
+      match_matrix <- pick(all_of(year_cols)) == otp_ttl_bdrms
+      # replace NAs with FALSE so max.col doesn't trip
+      match_matrix[is.na(match_matrix)] <- FALSE 
+      
+      # If a row has at least one match, get the index. Otherwise, NA.
+      if_else(rowSums(match_matrix) > 0, max.col(match_matrix, ties.method = "first"), NA_integer_)
+    },
+    
+    # CREATE MATCH NAME: Convert that index (e.g., 1) into the column name (e.g., "new_2010")
+    match_name = year_cols[match_index],
+    # COLUMN 1: The Match Year Flag
+    # Priority: If it matches, show which one. Otherwise, it's unmatched.
+    # match_status = case_when(
+    #   !is.na(match_index) ~ paste0("Matches with ", match_name),
+    #   TRUE                ~ "Unmatched"
+    #),
+
+    # COLUMN 2: The Direction of Change
+    # Only applies to matches. We compare the OTP legacy to the matched year's value.
+    bed_trend = case_when(
+      otp_ttl_bdrms < newbeds_2023  ~ "Expansion since OTP",
+      otp_ttl_bdrms > newbeds_2023  ~ "Shrink - double check",
+      otp_ttl_bdrms == newbeds_2023 ~ "Perfect Match",
+      TRUE                          ~ NA_character_
     ),
-    all_zeros = if_else(
-      all(c_across(starts_with("NEW")) == 0 | is.na(c_across(starts_with("NEW")))), 
-      "TRUE", 
-      "bedrooms recorded"
+
+    # COLUMN 3: Data Presence (The "All Zeros/NAs" check)
+    # Checks if ALL columns starting with 'NEW' are either 0 or NA
+    data_presence = if_else(
+      if_all(starts_with("new"), ~ .x == 0 | is.na(.x)),
+      "Empty (All 0 or NA)",
+      "Bedrooms Recorded"
     )
-  ) %>%
-  mutate(tmk = as.character(tmk))
+  )
+
+# remove commercial 
+
+
+updated_table4_draft <- otp_updated_with_BEDflags %>% 
+  filter(!is.na(otp_commercial)) # rows = 190
+
+
+# now gapfill the rest. Logic:
+# if NEW are all empty but we do have OTP, add year built and gapfill with OTP from there
+# if NEW are all empty and opt is empty, google places
+# if disagreement, but yearbuilt matches pattern, then keep the same. 
+otp_updated_with_BEDflags_gapfilled <- otp_updated_with_BEDflags %>% 
+  filter(is.na(otp_commercial))
+
+
+
 
 # before moving forward, lets grab the "year built column" above so we know when there should and should be zeros. we c can also use min and max
 
@@ -1229,56 +1280,7 @@ otp_updated_withNEWbeds_yrblt_fix3 <- otp_updated_withNEWbeds_yrblt %>%
     })
   )
 
-  
-  
 
-# code to backfill
-
-  # pivot_longer(cols = starts_with("NEW"), 
-  #              names_to = "year_col", 
-  #              values_to = "bed_val") %>%
-  # group_by(tmk) %>% 
-  # mutate(
-  #   # find the first non-NA/non-zero value in the timeline
-  #   first_real_val = bed_val[which(bed_val > 0 & !is.na(bed_val))[1]],
-  #   
-  #   # find the position (index) of that first value
-  #   first_val_idx = which(bed_val > 0 & !is.na(bed_val))[1],
-  #   current_idx = row_number(),
-  #   
-  #   # 4. Apply the Logic
-  #   new_bed_val = case_when(
-  #     # If no real data exists at all for this tmk, use A
-  #     is.na(first_val_idx) ~ otp_ttl_bdrms,
-  #     
-  #     # If we are BEFORE the first real data point, use A
-  #     current_idx < first_val_idx ~ otp_ttl_bdrms,
-  #     
-  #     # If we are AT or AFTER the first real data point, 
-  #     # use the first real value to fill any NAs/zeros
-  #     current_idx >= first_val_idx & (is.na(bed_val) | bed_val == 0) ~ first_real_val,
-  #     
-  #     # Otherwise, keep the data as it is
-  #     TRUE ~ bed_val
-  #   )
-  # ) %>% 
-  # select(-bed_val, -first_real_val, -first_val_idx, -current_idx) %>%
-  # pivot_wider(names_from = year_col, values_from = new_bed_val) %>%
-  # ungroup() %>% 
-  # rowwise() %>%
-  # mutate(
-  #   first_tax_val = c_across(starts_with("NEW"))[which(!is.na(c_across(starts_with("NEW"))) & c_across(starts_with("newbeds")) > 0)[1]],
-  #   
-  #   # 2. CREATE THE FLAG: Compare A to that first tax record
-  #   shrinkage_amt = otp_ttl_bdrms - first_tax_val,
-  #   shrinkage_flag = case_when(
-  #     is.na(first_tax_val) ~ "No tax data to compare",
-  #     shrinkage_amt > 0     ~ paste0("Dropped by ", shrinkage_amt, " beds"),
-  #     shrinkage_amt < 0     ~ "Grew since baseline",
-  #     TRUE                  ~ "Consistent"
-  #   )
-  # ) %>%
-  # ungroup()
   
   
 ```
@@ -1481,8 +1483,9 @@ table_3b_wide <- table_3b_long %>%
 
 
 
+# OLD CODE 
 
-### B) NON DWELL scenarios
+B) NON DWELL scenarios
 
 The old Hawaii osds data alread has categorized non dwells to some extent. Here I'll see how many of the new, non-dwell permits correspond to these old-places.
 
@@ -1639,118 +1642,5 @@ write_csv(table1,
 write_csv(table_2_final,
           file.path(driver_dir,"4_OSDS_N_Runoff/output-data/commercial_finaltables/hi_comm_table2.csv"))
 
-```
-
-
-### c) TRICKY and HARD scenarios
-
-For the tricky and hard scenarios, I had to do a bit of extra data wrangling. These are saved as tables pertaining to "list 2" and list 3 tables in the int folder. 
-
-Here, we'll just make sure that what I did for these using new data doesn't conflict with old data in anyway. 
-
-```{r}
-
-
-
-
-
-```
-
-# OLD CODE
-
-```{r}
-
-
-# --------------- OTP Data: Data Reshape and Merge ------------------------------------- #
-# first, check if the only year in "new" is 2010 or 2009. Repeat data.
-
-
-
-
-# now, add the encoding 
-
-otp_hi_filtered_byOBOP_wideENC <- otp_hi_filtered_byOBOP %>% 
-  select(-class) %>% 
-  pivot_longer(cols = starts_with("class"), names_to = "class", values_to = "quantity") %>% 
-  filter(quantity != 0) %>% 
-  rename(ttl_osds_2010 = osds_qty) %>% 
-  mutate(osds_class_otp = case_when(
-    class == "class_iv" ~ 8, # cesspool 
-    class == "class_iii" ~ 4,
-    class == "class_ii" ~ 2,
-    class == "class_i" ~ 1
-  )) %>%
-  pivot_wider(id_cols = c("newbuild_permit_id","tmk","ttl_osds_2010"), names_from = c("year_issued","class"), values_from = c("osds_class_otp")) %>%
-  mutate(combo_code = rowSums(across(starts_with("2010")), na.rm = TRUE))
-
-otp_hi_filtered_byOBOP_longENC <- otp_hi_filtered_byOBOP_wideENC %>% # collapse the wide columns
-  select(-starts_with("2010"), -newbuild_permit_id)
-
-
-# --------------- New Data Since: Clean, flag updates ------------------------------------- #
-
-
-# now pivot the NEW data, for now just the "easy", that is also in OTP, one building one permit category, wider to match
-
-onebuild_onepermit_inbob <- onebuilding_onepermit%>% 
-  filter(tmk %in% otp_hi_filtered_byOBOP$tmk)
-
-onebuild_onepermit_hi_wide <- onebuild_onepermit_inbob %>% 
-  pivot_wider(id_cols = c("permit_id","tmk"), names_from = "year", values_from = c("permit_type","osds_class"))
-
-dups_obop_hi <- onebuild_onepermit_hi_wide %>% mutate(duplicated = duplicated(tmk)) # no duplicates. great. 
-
-
-# -------------- Combine  ----------------------------------- #
-
-# IMPORTANT note: since 493 of the bob data have more than one OSDS, but the new data here are examples of just one building, one new permit, if any of the new data match to the old ones with more than one osds, weʻll have to make an assumption about which one was updated in this new data. 
-
-all_osds_present_inboth <- left_join(dups_obop_hi, otp_hi_filtered_byOBOP_longENC, by = c("tmk"))
-
-# so the next analysis will determine the most recent year a tmk was upgraded. We can add a flag for if there was an upgrade and there are multiple OSDS on the property. hoping that most of these did not have an upgrade. 
-
-
-all_permit_present_inboth_long <- all_osds_present_inboth %>% 
-  rename(otp_class_2010 = combo_code) %>% # this is what it was in 2010
-  select(-starts_with("permit_type")) %>% # we dont need this right now
-  pivot_longer(cols = starts_with("osds"),
-               names_to = "year",
-               values_to = "class",
-               values_drop_na = TRUE) %>% 
-  mutate(
-    year_num = as.integer(str_remove(year, "osds_class_"))  # extract numeric year rather than colname with year in it
-  )
-
-
-# here we'll use some logic to create a yes/no flag if upgraded, and a specific text flag for what kind of upgrade it was 
-
-
-last_permit_persentinboth <- all_permit_present_inboth_long %>% 
-  group_by(tmk) %>% 
-  slice_max(year_num, n = 1, with_ties = FALSE) %>% # get the latest year we have records for a given tmk
-  mutate(class_last = as.numeric(class),
-         class_last_year = year_num,
-         class_otp = as.numeric(otp_class_2010)) %>% 
-  mutate(upgrade_yn = case_when(
-    class_last < class_otp & class_otp %in% c(1,2,4,8) ~ "upgrade occured on a single osds",
-    class_last < class_otp & class_otp %!in% c(1,2,4,8) ~ "change occured on one of many existing osds",
-    class_last == class_otp & class_otp %in% c(1,2,4,8) & class_last_year > 2010 ~ "addition",
-    class_last == class_otp & class_otp %in% c(1,2,4,8) & class_last_year <= 2010 ~ "data overlap",
-    class_last > class_otp  ~ "check class assignment"
-  )) %>% 
-  mutate(cesspool_upgrade = case_when(
-    class_otp == 8 & class_last < 4 ~ "cesspool upgraded",
-    class_otp %in% c(9,10,11,12,13,14,15) & class_last < 4 ~ "maybe cesspool upgraded - multiple existing osds",
-    class_last == 4 & class_last_year > 2010 ~ "new cesspool permit",
-    class_otp == 4 & class_last == 4 & class_last_year %in% c(2009,2010) ~ "duplicate, not upgraded",
-    class_otp %!in% c(9,10,11,12,13,14,15) ~ "na"
-  ))
-
-
-# save! remember, we need to do this for the tricky and hard scenarios, and non dwells, as well
-write_csv(last_permit_persentinboth,
-          file.path(driver_dir,"4_OSDS_N_Runoff/output-data/hi_easy_possible_OSDSupgrades_withflag.csv"))
-
-```
 ```
 
