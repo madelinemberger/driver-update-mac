@@ -75,7 +75,6 @@ clean_addresses <- lapply(unique_full_address, clean_oahu_address)
 
 # --------- Function to return info from OSM --------------- #
 
-#AIzaSyBeVFcbESzDgIwQGw5mER1bdsoLC9mXc4M <- key
 
 #iggy says save each call to a file and then you dont have to request the API too much
 
