@@ -682,23 +682,25 @@ represents:
     
 The `osds_class` column also does not have any 4s, just 1-3, and -9999. I'll use the same additive coding here as I did with Maui Nui, Kauai (and eventually Oahu): 
 
-| Combination                           | Sum |
-|---------------------------------------|-----|
-| Class 1                               | 1   |
-| Class 2                               | 2   |
-| Class 1 + Class 2                     | 3   |
-| Class 3                               | 4   |
-| Class 1 + Class 3                     | 5   |
-| Class 2 + Class 3                     | 6   |
-| Class 1 + Class 2 + Class 3           | 7   |
-| Class 4                               | 8   |
-| Class 1 + Class 4                     | 9   |
-| Class 2 + Class 4                     | 10  |
-| Class 1 + Class 2 + Class 4           | 11  |
-| Class 3 + Class 4                     | 12  |
-| Class 1 + Class 3 + Class 4           | 13  |
-| Class 2 + Class 3 + Class 4           | 14  |
-| Class 1 + Class 2 + Class 3 + Class 4 | 15  |
+### Wastewater Class Encoding Reference Table
+
+| Detected Classes | Encoded Sum | Description |
+| :--- | :---: | :--- |
+| **Class 1** | 1 | Cleanest Septic Type |
+| **Class 2** | 2 | Secondary Septic Type |
+| **Class 1 + 2** | 3 | **Combination of Class 1 + Class 2** |
+| **Class 3** | 4 | Aerobic System |
+| **Class 1 + 3** | 5 | Class 1 Septic + Aerobic |
+| **Class 2 + 3** | 6 | Class 2 Septic + Aerobic |
+| **Class 1 + 2 + 3** | 7 | Classes 1, 2, and 3 |
+| **Class 4** | 8 | Cesspool |
+| **Class 1 + 4** | 9 | Class 1 + Class 4 |
+| **Class 2 + 4** | 10 | Class 2 + Class 4 |
+| **Class 1 + 2 + 4** | 11 | Classes 1, 2, and 4 |
+| **Class 3 + 4** | 12 | Aerobic + Class 4 |
+| **Class 1 + 3 + 4** | 13 | Classes 1, 3, and 4 |
+| **Class 2 + 3 + 4** | 14 | Classes 2, 3, and 4 |
+| **All (1, 2, 3, 4)** | 15 | Full suite of permits |
 
 
 
@@ -1032,6 +1034,7 @@ otp_unchanged_table2_2010_complete <- otp_unchanged_table2_allyrs %>%
     )
   }))
 
+# pull tmks to add flags 
 tmks_tocheck_googplaces <- otp_unchanged_table2_2010_complete %>%
   filter(OTP_2010 == 0 & rowSums(!is.na(pick(starts_with("new_")))) == 0) %>%
   pull(tmk)
@@ -1039,7 +1042,6 @@ tmks_tocheck_googplaces <- otp_unchanged_table2_2010_complete %>%
 legacy_used_tmks <- otp_unchanged_table2_2010_complete %>%
   filter(gapfill_flag == "Gap-filled with OTP value") %>% 
   pull(tmk)
-
 
 otp_unchanged_table2_2010_complete_cl <- otp_unchanged_table2_2010_complete %>% 
   select(-OTP_2010, -gapfill_flag)
@@ -1119,12 +1121,12 @@ otp_UPDATED_allinfo <- hi_otp %>%
 
 
 table_2_2010 <- table2a_bedrooms %>% 
-  rename_with(., ~paste0("new",.x), .cols= !tmk) %>% 
+  rename_with(., ~paste0("newbeds_",.x), .cols= !tmk) %>% 
     mutate(tmk = as.integer(tmk))
 
 # check: are all the "updated" tmks already in table 2?
 
-table2_updated <- table_2_2010 %>% filter(tmk %in% otp_UPDATED_allinfo$tmk) %>% 
+table2_updated <- table_2_2010 %>% filter(tmk %in% otp_UPDATED_allinfo$tmk)
 # no, missing a 262 (commercial) 
 
 
@@ -1181,7 +1183,7 @@ otp_updated_with_BEDflags <- otp_updated_withNEWbeds %>% mutate(
     # COLUMN 3: Data Presence (The "All Zeros/NAs" check)
     # Checks if ALL columns starting with 'NEW' are either 0 or NA
     data_presence = if_else(
-      if_all(starts_with("new"), ~ .x == 0 | is.na(.x)),
+      if_all(starts_with("newbeds"), ~ .x == 0 | is.na(.x)),
       "Empty (All 0 or NA)",
       "Bedrooms Recorded"
     )
@@ -1193,19 +1195,7 @@ otp_updated_with_BEDflags <- otp_updated_withNEWbeds %>% mutate(
 updated_table4_draft <- otp_updated_with_BEDflags %>% 
   filter(!is.na(otp_commercial)) # rows = 190
 
-
-# now gapfill the rest. Logic:
-# if NEW are all empty but we do have OTP, add year built and gapfill with OTP from there
-# if NEW are all empty and opt is empty, google places
-# if disagreement, but yearbuilt matches pattern, then keep the same. 
-otp_updated_with_BEDflags_gapfilled <- otp_updated_with_BEDflags %>% 
-  filter(is.na(otp_commercial))
-
-
-
-
-# before moving forward, lets grab the "year built column" above so we know when there should and should be zeros. we c can also use min and max
-
+# get yearbuilt for these tmks
 year_built_for_all <- allyears_hi_dwell %>% 
   # filter(
   #   full_taxid %in% otp_updated_withNEWbeds$tmk[otp_updated_withNEWbeds$new_all_zeros == "all zeros"] |
@@ -1223,66 +1213,297 @@ year_built_for_all <- allyears_hi_dwell %>%
     #count how many years were found
     count_buildyears = n()
   ) %>%
-  ungroup() # tmks = 2101
-
-# add this column back in to otp updated with new bedrooms
-
-otp_updated_withNEWbeds_yrblt <- otp_updated_withNEWbeds %>% 
-  left_join(., year_built_for_all, by = "tmk")
-
-# FIX 1: Fill all zeros with OTP bedroom value, since all of these were built before our time
-# FIX 2: Fill Double check dwell data cleans
+  ungroup() %>% 
+  mutate(tmk = as.integer(tmk))
 
 
-otp_updated_withNEWbeds_yrblt <- otp_updated_withNEWbeds %>% 
+
+# now gapfill the rest. Logic:
+# if NEW are all empty but we do have OTP, add year built and gapfill with OTP from there (mutate 1)
+# if NEW are all empty and opt is empty, google places
+# if disagreement, but yearbuilt matches pattern, then keep the same. 
+
+# which rows to fill with otp number?
+#rows_to_fill <- otp_updated_with_BEDflags$data_presence == "Empty (All 0 or NA)" & otp_updated_with_BEDflags$otp_ttl_bdrms > 0
+
+otp_updated_with_BEDflags_gapfilled <- otp_updated_with_BEDflags %>% 
+  filter(is.na(otp_commercial)) %>%  # now empty = 175
   left_join(., year_built_for_all, by = "tmk") %>%
+  # 1. Create the flags
   mutate(
-    across(starts_with("NEW"),
-           ~{
-             val <- as.numeric(.x)
-             case_when(
-               all_zeros == "TRUE" ~ as.numeric(otp_ttl_bdrms),
-               flag == "double check dwell data" & (is.na(val) | val == 0) ~ as.numeric(otp_ttl_bdrms),
-                                                    TRUE ~ val
-             )
-           })
-  )
-
-
-# FIX 3: Unmatched 
-# temporary filter: 
-
-unmatched <- otp_updated_withNEWbeds_yrblt %>% 
-  filter(flag == "unmatched") %>% 
-  select(tmk, otp_ttl_bdrms, otp_ttl_osds_2010,min_year,max_year,year_built_combined,flag, all_zeros,starts_with("NEW"))
-  
-
-# FIX 3: "UNMATCHED" disagreements in bedrooms
-otp_updated_withNEWbeds_yrblt_fix3 <- otp_updated_withNEWbeds_yrblt %>%
-  mutate(
-    across(starts_with("NEW"), ~ {
-      # 1. Setup variables
-      col_year <- as.numeric(gsub("\\D", "", cur_column()))
-      val      <- as.numeric(.x)
+    gapfill_flag = if_else(data_presence == "Empty (All 0 or NA)" & otp_ttl_bdrms > 0, 
+                           "Gapfilled with OTP value", "Used dwell data")
+  ) %>%
+  # 2. Apply the Gap-fill
+  mutate(across(starts_with("newbeds"), ~ {
+    fill_condition <- data_presence == "Empty (All 0 or NA)" & otp_ttl_bdrms > 0
+    if_else(fill_condition, as.numeric(otp_ttl_bdrms), as.numeric(.x))
+  })) %>%
+  # 3. Apply the CONSERVATIVE Year Built Correction
+  mutate(across(starts_with("newbeds"), ~ {
+    col_year <- as.numeric(str_extract(cur_column(), "\\d{4}"))
+    
+    case_when(
+      # CONDITION A: If we DID NOT gap-fill this row, leave it exactly as is
+      gapfill_flag == "Used dwell data" ~ as.numeric(.x),
       
-      # 2. Extract the EARLIEST year from your combined string (e.g., "1950, 1960" -> 1950)
-      # We split by comma, convert to numeric, and take the min.
-      first_yb <- as.numeric(sapply(strsplit(as.character(year_built_combined), ","), 
-                                    function(x) min(as.numeric(x), na.rm = TRUE)))
+      # CONDITION B: If we DID gap-fill, but house was built prior to 2010 or unknown, keep it
+      is.na(year_built_combined) | year_built_combined <= 2010 ~ as.numeric(.x),
+      
+      # CONDITION C: If we DID gap-fill AND the house didn't exist yet, set to NA
+      year_built_combined > col_year ~ NA_real_,
+      
+      # Fallback: Keep current value
+      TRUE ~ as.numeric(.x)
+    )
+  }))
 
-      case_when(
-        # ONLY apply logic to "unmatched" rows
-        flag == "unmatched" & !is.na(first_yb) & col_year < first_yb ~ 0,
-        
-        # In all other cases (including non-unmatched rows), keep the value as is
-        TRUE ~ val
-      )
-    })
+# ----------------------- Table 3 --------------------------------------- #
+
+# hoping class will be less difficult! we basically are going to check for ones that don't match as well
+
+
+otp_updated_withNEWclasses <- left_join(otp_UPDATED_allinfo, IWS_table1_tmk_registry_wflags, by = "tmk") %>% 
+  #filter(is_dwelling == TRUE) %>% 
+  left_join(table_3_2010, by = "tmk")
+
+# get class cols
+class_cols <- otp_updated_withNEWclasses %>% select(starts_with("new")) %>% names()
+# run match 
+table3_updated_classmatch <- otp_updated_withNEWclasses %>% 
+  mutate(
+   # CREATE MATCH INDEX: 
+    # This finds the index (1, 2, 3...) of the first column that matches OTP bedrooms
+    # We use matrix comparison (df[cols] == df$otp) to keep it vectorized
+    match_index = {
+      match_matrix <- pick(all_of(class_cols)) == otp_encoded_sum
+      # replace NAs with FALSE so max.col doesn't trip
+      match_matrix[is.na(match_matrix)] <- FALSE 
+      
+      # If a row has at least one match, get the index. Otherwise, NA.
+      if_else(rowSums(match_matrix) > 0, max.col(match_matrix, ties.method = "first"), NA_integer_)
+    },
+    
+    # CREATE MATCH NAME: Convert that index (e.g., 1) into the column name (e.g., "new_2010")
+    match_name = class_cols[match_index],
+    # COLUMN 1: The Match Year Flag
+    # Priority: If it matches, show which one. Otherwise, it's unmatched.
+    # match_status = case_when(
+    #   !is.na(match_index) ~ paste0("Matches with ", match_name),
+    #   TRUE                ~ "Unmatched"
+    #),
+
+    # COLUMN 3: Data Presence (The "All Zeros/NAs" check)
+    # Checks if ALL columns starting with 'NEW' are either 0 or NA
+    data_presence = if_else(
+      if_all(starts_with("new"), ~ .x == 0 | is.na(.x)),
+      "Empty (All 0 or NA)",
+      "OSDS Permit Recorded"
+    )) %>% 
+  unite("class_history", starts_with("new"), sep = "|", remove = FALSE)
+
+
+# separate df to create a flag
+
+update_logic_df <- table3_updated_classmatch %>% 
+  select(tmk, otp_encoded_sum, min_year, max_year, n_addresses, class_history, starts_with("new")) %>% 
+  # change this logic: first define siutation in "new", ie one or two upgrades etc. then compare that to OSDS. 
+  # 
+  mutate(
+    legacy_val = as.numeric(otp_encoded_sum),
+    v2009 = as.numeric(new2009),
+    v2010 = as.numeric(new2010),
+    
+    scenario_match_flag = case_when(
+      legacy_val == v2009 | legacy_val == v2010 ~ "matched 2009 or 2010",
+      is.na(v2009) & is.na(v2010) ~ "no data to compare",
+      TRUE ~ "unmatched"
+    )
   )
 
+# METHODS NOTE: pre2009 column will retain otp value if there is no data for 2009 or 2010. if it matches what we have in 2009 or 2010, then we will just use those values and put NA in pre2009. 
 
+update_logic_refined <- update_logic_df %>% 
+  mutate(newpre_2009 = case_when(
+    scenario_match_flag == "matched 2009 or 2010" ~ NA_real_,
+    scenario_match_flag == "unmatched" | scenario_match_flag == "no data to compare" ~ as.numeric(legacy_val),
+    TRUE ~ NA_real_
+  )) %>% 
+  select(tmk, newpre_2009, new2009, new2010, starts_with("new_201"), everything()) %>% 
+  select(-class_history) %>% 
+  unite("class_history", starts_with("new"), sep = "|", remove = FALSE) %>% 
+  mutate(unique_story = sapply(str_split(class_history, "\\|"), function(x){
+    x_clean <- x[!is.na(x) & x != "" & x != "NA"] # remove NAs and empty
+    paste(unique(x_clean), collapse = "|")
+  }),
+  # 2. Define the Upgrade Scenarios
+    upgrade_scenario = case_when(
+      # Scenario 0: if empty or has no pipe, just a single state (no change)
+      unique_story == "" | !str_detect(unique_story, "\\|") ~ "no upgrade detected",
+     
+       # Scenario 1: Single Cesspool (8) -> Any Septic/Aerobic (1, 2, or 4)
+      # Regex: Look for 8, followed by anything, ending in 1, 2, or 4
+      str_detect(unique_story, "^8\\|.*[1234]$") ~ "single cesspool upgraded to septic or aerobic",
+      
+      # Scenario 2: REPAIR Starts with 3, ends with 1 or 2
+      str_detect(unique_story, "^3\\|.*[12]$") ~ "multiple septic with new permit: possible repair",
+      
+      # # SCENARIO 3: A "Cleaner" Septic Move (e.g., 2 or 4 upgraded to the "Cleanest" 1)
+      str_detect(unique_story, "^[24]\\|>*1$") ~ "septic or aerobic system refined to cleanest type (Class 1)",
+      
+      # Scenario 3: Multiple OSDS (9-15) -> 1, 2, or 4
+      # Regex: Look for any double-digit number between 9-15 followed by a better class
+      str_detect(unique_story, "^(9|1[0-5])\\|.*[1234]$") ~ "multiple osds with cesspool upgraded",
+      
+      # Scenario 4: Multiple OSDS with cesspool (9 - 15) --> one cesspool 
+      str_detect(unique_story, "^(9|1[0-5])\\|>*8$") ~ "multiple osds with new cesspool application",
+      
+      # DATA ERROR: Ends in 8 or 9 but started with something cleaner (1, 2, or 4)
+      str_detect(unique_story, "^[1234567]\\|.*[8|9|1[0-5]]$") ~ "potential data error: backslide to cesspool",
+      
+      # LATERAL: Started Clean, Ended Clean, but not as Class 1 (e.g., 4|2 or 1|2)
+      str_detect(unique_story, "^[123]\\|.*[123]$") ~ "lateral change (clean to clean)",
+      
+      # Catch-all
+      TRUE ~ "other scenario"
+    )) %>% 
+  mutate(
+    # upgrade_scenario = ifelse(legacy_val == 8 & unique_story == "1", "single cesspool upgraded to septic or aerobic", upgrade_scenario),
+    upgrade_scenario = case_when(
+      unique_story %in% "9|1|8" ~ "cesspool and septic - both repaired, no change",
+      unique_story %in% "10|2|9" ~ "cesspool and septic 2 - septic repaired twice, cesspool once",
+      TRUE ~ upgrade_scenario
+      )
+    )
+
+update_logic_refined %>%
+  filter(upgrade_scenario == "other scenario") %>%
+  distinct(unique_story) %>%
+  print()
+
+# CLEANED UP VERSION
+
+update_logic_refined_cl <- update_logic_df %>% 
+  mutate(newpre_2009 = case_when(
+    scenario_match_flag == "matched 2009 or 2010" ~ NA_real_,
+    scenario_match_flag %in% c("unmatched", "no data to compare") ~ legacy_val,
+    TRUE ~ NA_real_
+  )) %>% 
+  select(tmk, newpre_2009, new2009, new2010, starts_with("new_201"), everything()) %>% 
+  # Use rowwise to build the unique story without the split/paste overhead
+  rowwise() %>%
+  mutate(unique_story = {
+    vals <- c_across(starts_with("new"))
+    vals <- vals[!is.na(vals) & vals != "" & vals != "NA"]
+    paste(unique(vals), collapse = "|")
+  }) %>%
+  ungroup() %>%
+  mutate(
+    upgrade_scenario = case_when(
+      # High-priority special overrides
+      unique_story == "9|1|8"  ~ "cesspool and septic - both repaired, no change",
+      unique_story == "10|2|9" ~ "cesspool and septic 2 - septic repaired twice, cesspool once",
+      unique_story == "7|9|1" ~ "potential data error: cesspool added, then possibly updated",
+      unique_story == "4|2" ~ "septic and aerobic - replacement of aerobic",
+      
+      # Standard Logic
+      unique_story == "" | !str_detect(unique_story, "\\|") ~ "no upgrade detected",
+      str_detect(unique_story, "^8\\|.*[1234]$") ~ "single cesspool upgraded to septic or aerobic",
+      str_detect(unique_story, "^3\\|.*[12]$") ~ "multiple septic with new permit: possible repair",
+      str_detect(unique_story, "^[24]\\|.*1$") ~ "septic or aerobic system refined to cleanest type (Class 1)",
+      str_detect(unique_story, "^(9|1[0-5])\\|.*[1234]$") ~ "multiple osds with cesspool upgraded",
+      str_detect(unique_story, "^(9|1[0-5])\\|.*8$") ~ "multiple osds with new cesspool application",
+      
+      # Errors and Laterals
+      str_detect(unique_story, "^[1-7]\\|.*(8|9|1[0-5])$") ~ "potential data error: backslide to cesspool",
+      str_detect(unique_story, "^[123]\\|.*[123]$") ~ "lateral change (clean to clean)",
+      
+      TRUE ~ "other scenario"
+    )
+  )
+
+# table 3 updated - note, this one has a new column we'll need to add to "unchanged"
+
+table_3_new_updated <- update_logic_refined_cl %>% 
+  select(tmk, starts_with("new"))
+
+# create df version to add the flag to table 1. Pivot for table 3.
+
+class_flag_table1 <- update_logic_refined_cl %>% 
+  select(tmk,class_match_flag = scenario_match_flag,unique_story,upgrade_scenario)
+
+# ------------------- Finalize Tables 1, 2 and 3a for Updated ----------- #
+# Combine new and updated after gap filling and resolving issues between WH version and Dwell data
+
+# Table 1: New flag = gapfill flag
+
+table1_updated <- otp_updated_with_BEDflags_gapfilled %>% 
+  select(tmk,n_permits,n_years,n_addresses,min_year,max_year,is_dwelling,scenario,status_since_otp,bed_trend,gapfill_flag) %>% 
+  rename(bedroom_data_source = gapfill_flag) %>% 
+  mutate(n_addresses = as.character(n_addresses))
+
+# read in full registry 
+table1_new_and_unchanged <- read_csv( file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/hi_tables/table1_tmk_registry_NEW_and_UNCHANGED.csv"))
+
+#
+table_1_complete <- table1_new_and_unchanged %>% 
+  full_join(table1_updated, by = c("tmk", "n_permits", "n_years", "n_addresses", 
+                                   "min_year", "max_year", "is_dwelling","status_since_otp",
+                                   "scenario")) %>%
+  mutate(bedroom_data_source = ifelse(is.na(bedroom_data_source),gapfill_flag,bedroom_data_source)) %>% 
+  mutate(bedroom_data_source = ifelse(is.na(bedroom_data_source),"Used dwell data",bedroom_data_source)) %>% 
+  rename(in_dwelldat = is_dwelling) %>% 
+  select(-gapfill_flag) %>% 
+  left_join(., class_flag_table1, by = "tmk")
   
   
+# Table 2: Bedroom by year
+
+table2_new_unchanged <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/hi_tables/table2_bedrooms_NEW_and_UNCHANGED.csv"))
+
+table2_complete <- table2_updated %>% 
+  rename_with(
+    ~str_replace(., "newbeds","beds"),
+    starts_with("new")
+  ) %>% 
+  full_join(table2_new_unchanged, by = c("tmk", grep("^beds_", names(table2_updated), value = TRUE)))
+# 807 missing from this, should all be accounted for in table 4
+
+
+# Table 3a: Encoded class by year  
+table3_new_and_unchanged <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/hi_tables/table3_classes_NEW_and_UNCHANGED.csv")) %>% 
+  mutate(osds_cl_pre_2009 = NA)
+
+table3_complete <- table_3_new_updated %>% 
+    rename_with(
+    ~str_replace(., "new","osds_cl_"),
+    starts_with("new")
+  ) %>% 
+  full_join(table3_new_and_unchanged, by = c("tmk", grep("^osds_", names(table_3_new_updated), value = TRUE)))
+
+
+# Checks: 
+# All TMKs in table accounted for? 
+# No double tmks in any of the tables?
+
+
+# Save final versions! Don't forget table 4 draft
+
+write_csv(table_1_complete,
+          file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/hi_tables/table1_tmk_registry_ALL_draft.csv"))
+
+write_csv(table2_complete,
+          file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/hi_tables/table2_bedrooms_ALL_draft.csv"))
+
+
+write_csv(table3_complete,
+          file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/hi_tables/table3_osdscl_ALL_draft.csv"))
+
+
+write_csv(updated_table4_draft,
+          file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/hi_tables/table4_updated_draft.csv"))
+
+
 ```
 
 
@@ -1292,7 +1513,10 @@ otp_updated_withNEWbeds_yrblt_fix3 <- otp_updated_withNEWbeds_yrblt %>%
 ```{r}
 
 # --------------------Create table 4: Commercial Locations -------------------------------- #
+# these are dwellings we do not have any bedroom information for. should be about 807 of these guys
 
+updated_table4_draft <- otp_updated_with_BEDflags %>% 
+  filter(!is.na(otp_commercial)) # rows = 190
 
 
 ```
