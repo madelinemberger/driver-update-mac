@@ -1454,7 +1454,8 @@ table_1_complete <- table1_new_and_unchanged %>%
   mutate(bedroom_data_source = ifelse(is.na(bedroom_data_source),"Used dwell data",bedroom_data_source)) %>% 
   rename(in_dwelldat = is_dwelling) %>% 
   select(-gapfill_flag) %>% 
-  left_join(., class_flag_table1, by = "tmk")
+  left_join(., class_flag_table1, by = "tmk") %>% 
+  mutate(upgrade_scenario = ifelse(is.na(upgrade_scenario),"no upgrade detected",upgrade_scenario))
   
   
 # Table 2: Bedroom by year
@@ -1515,9 +1516,35 @@ write_csv(updated_table4_draft,
 # --------------------Create table 4: Commercial Locations -------------------------------- #
 # these are dwellings we do not have any bedroom information for. should be about 807 of these guys
 
-updated_table4_draft <- otp_updated_with_BEDflags %>% 
-  filter(!is.na(otp_commercial)) # rows = 190
+# read in the one from unchanged
+table4_newunchaged <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/hi_tables/table4_commercial_UNCHANGED_only.csv"))
 
+# read in the one from updated
+table4_updated <- read.csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/hi_tables/table4_updated_draft.csv")) %>% 
+  select(tmk, otp_commercial)
+
+# what about new?
+new_nodwell <- IWS_table1_tmk_registry %>% 
+  filter(is_dwelling == FALSE) %>% #n = 807
+  rename(tmk = full_taxid) %>% 
+  full_join(table4_updated, by = "tmk") %>% 
+  filter(tmk %!in% table2_complete$tmk) # this got rid of the extras
+
+# list for google places api = whereever ^ this one is NA. need to fill all those.
+
+tmks_for_fill <- new_nodwell %>% 
+  filter(is.na(otp_commercial)) %>% 
+  pull(tmk) # 677
+
+# get addresses
+
+address_for_googleplace <- iws_hi_permits %>% 
+  filter(TMK %in% tmks_for_fill) %>% 
+  select(-permit_id, -FinalApprovalDate) %>% 
+  distinct()
+
+write_csv(address_for_googleplace,
+          file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/hi_tables/addresses_for_googleplace.csv"))
 
 ```
 
@@ -1565,15 +1592,23 @@ Last step! Tally up the changes and record as results below.
 
 ```{r}
 
+# this is old, but keeping so I remember how I talled
+# upgrade_tally <- last_permit_persentinboth %>% 
+#   group_by(upgrade_yn) %>% 
+#   summarize(
+#     total_n = n()
+#   )
+# 
+# cesspool_upgrade_tally <-  last_permit_persentinboth %>% 
+#   group_by(cesspool_upgrade) %>% 
+#   summarize(
+#     total_n = n()
+#   )
 
-upgrade_tally <- last_permit_persentinboth %>% 
-  group_by(upgrade_yn) %>% 
-  summarize(
-    total_n = n()
-  )
+# using new table - do we get the same result?
 
-cesspool_upgrade_tally <-  last_permit_persentinboth %>% 
-  group_by(cesspool_upgrade) %>% 
+update_summary <- table_1_complete %>% 
+  group_by(upgrade_scenario) %>% 
   summarize(
     total_n = n()
   )
@@ -1581,6 +1616,7 @@ cesspool_upgrade_tally <-  last_permit_persentinboth %>%
 ```
 
 
+**Using old method**
 
 WITHOUT COUNTING our more difficult scenarios: we have recorded 1514
 upgrades   
@@ -1595,6 +1631,11 @@ Of the upgrades (N = 1514),
 - 1195 are cesspool upgrades. 
 - 101 are upgrades that occured on tks with many osds, of which one was a cesspool
 - 133 are new cesspool permits since 2010
+
+**New method**
+- 1271 cases where one cesspool was likely upgraded to a better system (septic or aerobic)
+- 119 are cases where we had multiple osds, followed by one improved application
+- 3 are new cesspools on properties that already had multiple osds. that means there are about 130 new applications
 
 
 ### Step 4: Apply bitmask logic to create "status" table from permit data
