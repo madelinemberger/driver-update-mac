@@ -1806,20 +1806,23 @@ calculate_active_permits <- function(apps) {
 
 table_3a <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/hi_tables/table3_osdscl_ALL_draft.csv"))
 
-
   
 table_3a_long <- table_3a %>% 
-  pivot_longer(cols = -full_taxid, names_to = "Year", values_to = "Applied") %>% 
+  rename(osds_cl_2008 = osds_cl_pre_2009) %>% # note, this is a stand in for "pre 2009"
+  pivot_longer(cols = -tmk, names_to = "Year", values_to = "Applied") %>% 
   mutate(Applied = replace_na(Applied,0))
   
 table_3b_long <- table_3a_long %>% 
-  arrange(full_taxid,Year) %>% 
-  group_by(full_taxid) %>% 
+  arrange(tmk,Year) %>% 
+  group_by(tmk) %>% 
   mutate(active_status = calculate_active_permits(Applied)) %>% 
   ungroup()
   
 table_3b_wide <- table_3b_long %>% 
-  pivot_wider(id_cols = full_taxid, names_from = Year,values_from = active_status)
+  pivot_wider(id_cols = tmk, names_from = Year,values_from = active_status)
+
+write_csv(table_3b_wide,
+          file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/hi_tables/table3b_allyears_draft.csv"))
 
 
 ## ---------- 3. Detect change - is it the same as before? ----------- ##
