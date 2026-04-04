@@ -746,7 +746,7 @@ otp_unchanged <- hi_otp_class_enc %>%
 
 
 new_permits <- IWS_table1_tmk_registry %>% 
-  filter(full_taxid %!in% hi_otp_class_enc) # 6816 # flag
+  filter(full_taxid %!in% hi_otp_class_enc$tmk) # 4313 # flag
 
 # add flags to the tmk registry in table 1 for UPDATES and NEW. 
 
@@ -757,6 +757,34 @@ IWS_table1_tmk_registry_wflags <- IWS_table1_tmk_registry %>%
     TRUE ~ "Z"
   )) %>% 
   rename(tmk = full_taxid)
+
+
+# Create master tmk list separate from everything else. 
+
+# --- prep tmk lists  ---
+# Ensure both are integers for a perfect match
+otp_ids <- as.integer(hi_otp_class_enc$tmk)
+iws_ids <- as.integer(IWS_table1_tmk_registry$full_taxid)
+
+# --- create master list 
+master_tmk_registry <- data.frame(tmk = union(otp_ids, iws_ids)) %>%
+  mutate(
+    # 1. Was it in the original 2010 OTP?
+    in_otp = tmk %in% otp_ids,
+    
+    # 2. Does it have a newer IWS permit?
+    in_iws = tmk %in% iws_ids,
+    
+    # 3. Create your 3 Granular Categories
+    status_category = case_when(
+      in_otp & in_iws  ~ "Existing OTP: Updated with New Permit",
+      in_otp & !in_iws ~ "Existing OTP: Unchanged (No new permit)",
+      !in_otp & in_iws ~ "New Property: First Permit since OTP",
+      TRUE             ~ "Unknown/Error"
+    )
+  )
+
+
 
 ```
 
@@ -1456,13 +1484,27 @@ table_1_complete <- table1_new_and_unchanged %>%
   select(-gapfill_flag) %>% 
   left_join(., class_flag_table1, by = "tmk") %>% 
   mutate(upgrade_scenario = ifelse(is.na(upgrade_scenario),"no upgrade detected",upgrade_scenario))
+
+table_1_complete_v2 <- table1_new_and_unchanged %>%
+  # Join ONLY on tmk to avoid creating duplicate rows for the same property
+  full_join(table1_updated, by = "tmk", suffix = c(".orig", ".upd")) %>%
+  mutate(
+    # Prefer the updated value, fall back to original
+    n_permits = coalesce(n_permits.upd, n_permits.orig),
+    status_since_otp = coalesce(status_since_otp.upd, status_since_otp.orig),
+    scenario = coalesce(scenario.upd, scenario.orig),
+    # ... do this for the other columns if they are creating duplicates
+  ) %>%
+  # Clean up the .orig/.upd columns
+  select(-ends_with(".orig"), -ends_with(".upd")) %>%
+  left_join(class_flag_table1, by = "tmk")
   
   
 # Table 2: Bedroom by year
 
 table2_new_unchanged <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/hi_tables/table2_bedrooms_NEW_and_UNCHANGED.csv"))
 
-table2_complete <- table2_updated %>% 
+table_2_complete <- table2_updated %>% 
   rename_with(
     ~str_replace(., "newbeds","beds"),
     starts_with("new")
@@ -1475,17 +1517,52 @@ table2_complete <- table2_updated %>%
 table3_new_and_unchanged <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/hi_tables/table3_classes_NEW_and_UNCHANGED.csv")) %>% 
   mutate(osds_cl_pre_2009 = NA)
 
-table3_complete <- table_3_new_updated %>% 
-    rename_with(
-    ~str_replace(., "new","osds_cl_"),
-    starts_with("new")
-  ) %>% 
-  full_join(table3_new_and_unchanged, by = c("tmk", grep("^osds_", names(table_3_new_updated), value = TRUE)))
+correct_order <- colnames(table3_new_and_unchanged)
 
+# table_3_updated_cl <- table_3_new_updated %>% 
+#     rename_with(
+#     ~str_replace(., "new","osds_cl_"),
+#     starts_with("new")
+#   ) %>% 
+#   select(all_of(correct_order)) %>% 
+#   filter(tmk %in% otp_with_updates$tmk)
+
+# try a different way 
+table_3_complete_v2 <- table3_new_and_unchanged %>%
+  # remove the TMKs that we have specific updates for
+  filter(!(tmk %in% table_3_new_updated_cl$tmk)) %>%
+  # now add the updated versions
+  bind_rows(table_3_new_updated_cl) %>%
+  # Final safety check
+  filter(tmk %in% table_1_complete$tmk) # reorder.
+
+# # these aren't working
+# table3_complete <- union(table_3_new_updated_cl, table3_new_and_unchanged)
+# 
+# # something is fucked up here
+# table_3_complete_v2 <- bind_rows(table3_new_and_unchanged, table_3_new_updated_cl) %>% 
+#   distinct() %>% 
+#   filter(tmk %in% table_1_complete$tmk) # 1936 extra
 
 # Checks: 
-# All TMKs in table accounted for? 
-# No double tmks in any of the tables?
+# All TMKs in table 1 accounted for table 3? 
+
+all(table_1_complete$tmk %in% table_3_complete_v2$tmk)
+
+# All TMKS in table 2 in table 2?
+
+all(table_2_complete$tmk %in% table_1_complete$tmk)
+
+# Are all the no dwells in table 1?
+
+all(new_nodwell$tmk %in% table_1_complete$tmk) # TRUE
+
+# Is the authoritative tmk list we pulled at the beginning all in table 1?
+
+all(master_tmk_registry$tmk %in% table_1_complete$tmk) #TRUE YAY
+
+
+
 
 
 # Save final versions! Don't forget table 4 draft
@@ -1497,7 +1574,7 @@ write_csv(table2_complete,
           file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/hi_tables/table2_bedrooms_ALL_draft.csv"))
 
 
-write_csv(table3_complete,
+write_csv(table_3_complete_v2,
           file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/hi_tables/table3_osdscl_ALL_draft.csv"))
 
 
@@ -1509,7 +1586,7 @@ write_csv(updated_table4_draft,
 
 
 
-
+#### Table 4: Commercial Locations Prep
 
 ```{r}
 
@@ -1724,7 +1801,9 @@ calculate_active_permits <- function(apps) {
 
 ## ------------- 2. Read in data, reshape and apply ---------------- ##
 
-table_3a <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/hi_tables/table3_class_allcsv"))
+table_3a <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/hi_tables/table3_osdscl_ALL_draft.csv"))
+
+
   
 table_3a_long <- table_3a %>% 
   pivot_longer(cols = -full_taxid, names_to = "Year", values_to = "Applied") %>% 
@@ -1741,6 +1820,8 @@ table_3b_wide <- table_3b_long %>%
 
 
 ## ---------- 3. Detect change - is it the same as before? ----------- ##
+
+
 
 
 ```
