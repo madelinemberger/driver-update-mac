@@ -14,37 +14,28 @@ source(here("workflow/setup.R"))
 
 ```
 
-
 ### Step 1: Clean Up Dwell Data
-About dwelling data: 
- - obtained from each county, and maintained by each county differently 
- - records are created for tax assessment purposes, and therefore usually have two key time columns: year built and year assessed.
- - if the tmk has a second card number, that usually indicates an auxiliary building or additional structure built on the property.
 
-**Data Cleaning steps:**
-- parse data into correct columns (for HI, this was very sketchy)
-- look for exact duplicates of data with ALL COLUMNS - note which columns are differentiating them
-  - note: you canʻt do this for HI or Oahu because the parsing is so sketch
-- select columns of interest
-- look for duplicates again
-  - if we find duplicates, need to figure out which column is differentiating dwellings. this is very important. we also need to add a unique ID to each row. 
-  
-  Parse Oahu Raw files, join all years
+About dwelling data: - obtained from each county, and maintained by each county differently - records are created for tax assessment purposes, and therefore usually have two key time columns: year built and year assessed. - if the tmk has a second card number, that usually indicates an auxiliary building or additional structure built on the property.
+
+**Data Cleaning steps:** - parse data into correct columns (for HI, this was very sketchy) - look for exact duplicates of data with ALL COLUMNS - note which columns are differentiating them - note: you canʻt do this for HI or Oahu because the parsing is so sketch - select columns of interest - look for duplicates again - if we find duplicates, need to figure out which column is differentiating dwellings. this is very important. we also need to add a unique ID to each row.
+
+Parse Oahu Raw files, join all years
 
 This can all be found in the OG driver repository on github. Here I'll start from the clean CSV I wrote to generate products for QA QC report 2
 
 This report should tell us:
 
-- total number of TMKS assessed each year for Oahu
-- how many TMKS are single owner versus multiple owner per year of data
-- how many TMKS have more than one card (i.e. more than one building assessed on the parcel) per year
-- Summary of bedrooms and bathrooms per year?
+-   total number of TMKS assessed each year for Oahu
+-   how many TMKS are single owner versus multiple owner per year of data
+-   how many TMKS have more than one card (i.e. more than one building assessed on the parcel) per year
+-   Summary of bedrooms and bathrooms per year?
 
-Note: go back to parsing data and check the card column. 
+Note: go back to parsing data and check the card column.
 
-Resources: 
+Resources:
 
-https://thepapakeacollection.com/2023/03/18/understanding-the-tax-map-key-system-in-hawaii-a-comprehensive-guide/
+<https://thepapakeacollection.com/2023/03/18/understanding-the-tax-map-key-system-in-hawaii-a-comprehensive-guide/>
 
 ```{r dwelldata}
 
@@ -61,7 +52,6 @@ length(unique(oahu_dwells_cleanedup$full_taxid)) #how many? 14,8527
 
 
 ```
-
 
 ### Step 2: Bring in Permit Data (IWS, Dept. of Health)
 
@@ -97,18 +87,11 @@ write_csv(iws_oahu_NOdwell,
 
 ```
 
-**Results so Far**:
-- There were 1741 permits issued for HI island over the past 10 years
-- 1355 have dwelling information, and this represents 6011 tmks
-- 1105 do not have dwelling information
+**Results so Far**: - There were 1741 permits issued for HI island over the past 10 years - 1355 have dwelling information, and this represents 6011 tmks - 1105 do not have dwelling information
 
 ### Step 2b: Clean and Pivot New Permits
 
-Instead of doing a bunch of stuff that identifies easy, tricky and hard scenarios, I'm condensing everything here into one big clean. 
-are as follows: 
-1. Assign class, using a custom function
-2. Create master list (table 1)
-3. Create tables 2 and 3 based on master list. 
+Instead of doing a bunch of stuff that identifies easy, tricky and hard scenarios, I'm condensing everything here into one big clean. are as follows: 1. Assign class, using a custom function 2. Create master list (table 1) 3. Create tables 2 and 3 based on master list.
 
 ```{r}
 library(janitor)
@@ -286,8 +269,5 @@ write_csv(table3_classes,
           file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/oahu_tables/table3_class_allcsv"))
 
 ```
-
-
-
 
 ### Step 3: Compare and Integrate Past Datasets

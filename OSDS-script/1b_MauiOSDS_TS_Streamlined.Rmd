@@ -15,6 +15,71 @@ source(here("workflow/setup.R"))
 
 ```
 
+### Step 0: Create authoritative tmk list
+
+To start, we'll read in the iws data and the old otp data and create 4 lists:
+- unchanged since OTP
+- updated and present in both data sets
+- new permits since OTP
+- ALL tmks in both dataset - authortitative datasets
+
+
+* we'll also clean up the datasets by standardizing the tmk column 
+
+```{r}
+
+# new data: iws permits
+
+iws_permit_data <- read_csv(file.path(data_dir, "osds/shared-data/2009_Present_IWSList_Permits.csv"))
+
+iws_maui_permits <- iws_permit_data %>% 
+  mutate(tmk = as.character(TMK)) %>% 
+  filter(str_starts(tmk,"2"))
+
+iws_maui_permits_tmk <- iws_maui_permits %>% pull(tmk)
+
+
+# old data: otp 
+
+# read in maui and molokai. check lanai?
+otp_bob_maui <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/large-input-data/OSDS_HIGIS_2010/On-site_Sewage_Disposal_Systems_-_Maui.csv")) %>% 
+  clean_names()
+
+otp_bob_molo <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/large-input-data/OSDS_HIGIS_2010/On-site_Sewage_Disposal_Systems_-_Molokai.csv")) %>% 
+  clean_names()
+
+otp_maui <- rbind(otp_bob_maui, otp_bob_molo) %>% 
+  mutate(tmk = as.character(tmk))
+
+otp_maui_tmk <- otp_maui %>% 
+  pull(tmk)
+
+# new ones:
+
+maui_unchanged <- rbind(otp_bob_maui, otp_bob_molo) %>% 
+  mutate(tmk = as.character(tmk)) %>% 
+  filter(tmk %!in% iws_maui_permits_tmk) # 12857
+
+unchanged_tmks <- maui_unchanged %>% pull(tmk) %>% unique() #12857
+
+maui_updated <- rbind(otp_bob_maui, otp_bob_molo) %>% 
+  mutate(tmk = as.character(tmk)) %>% 
+  filter(tmk %in% iws_maui_permits_tmk) #1574
+
+updated_tmks <- maui_updated %>% pull(tmk) %>% unique() # 1574
+
+maui_new <- iws_maui_permits %>% 
+  filter(tmk %!in% otp_maui_tmk) # 837
+
+new_tmks <- maui_new %>% pull(tmk) %>% unique() #659
+# create authoritative tmk list - add ups!
+
+master_tmk_list <- c(iws_maui_permits_tmk,otp_maui_tmk)
+master_tmk_list <- unique(master_tmk_list) # 15090
+
+
+```
+
 
 ### Step 1: Clean Up Dwell Data
 
@@ -88,12 +153,10 @@ maui_dwelltmks_forjoin_noTXyear <- maui_dwell_allentries %>%
   distinct()
 
 
-
-
 ```
 
 
-### Step 2: Bring in IWS data
+### Step 2: Clean up in IWS data
 
 ```{r}
 
@@ -319,4 +382,24 @@ write_csv(table3_classes,
 
 ### Step 3: Compare and Integrate Past Datasets
 
+In this step we have to add in the old data, but differentiate between data that has been updated, unchanged. We also have to gapfill the bedroom and class data, because the old data is just a shot in time. 
 
+#### Unchanged
+
+These have no new permit data. But, it would be nice to get a better understanding of their bedroom # over time. We have to make one assumption in order to merge our dwell data with this older data. 
+
+Here, we'll join the bedroom data to the unchanged otp tmks. Then, sort into our 3 tables as before.
+We'll save these ALONE just as the unchanged tmks
+
+```{r}
+
+
+
+
+```
+
+#### Updates
+
+These ones are present in OTP but also in the new data. 
+
+## Step 4: Create table 3b

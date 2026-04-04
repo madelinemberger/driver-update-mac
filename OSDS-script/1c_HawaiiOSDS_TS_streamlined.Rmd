@@ -970,6 +970,7 @@ otp_unchanged_table2_allyrs <- otp_allyears_hi_dwell %>%
 possible_commercial_tmks <- setdiff(otp_unchanged_table2_2010$tmk, otp_unchanged_table2_allyrs$tmk)
 
 
+
 # class
   
 otp_unchanged_table3 <- otp_unchanged_allinfo %>% 
@@ -978,6 +979,8 @@ otp_unchanged_table3 <- otp_unchanged_allinfo %>%
   rename_with(~ paste0("osds_cl_", .), matches("^[0-9]"))
   
 # filter out the dwells that that didnt match in table 2 all years, see if they all have place assigment
+
+
 otp_unchanged_table4_draft <- otp_unchanged_allinfo %>% 
   select(tmk, year, pitt_code = pittcode, commercial, ttl_bdrms) %>% 
   filter(tmk %in% possible_commercial_tmks) %>% 
