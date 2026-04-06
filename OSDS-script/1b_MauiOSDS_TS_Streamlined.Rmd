@@ -476,7 +476,7 @@ maui_card_dwell_summary <-  maui_unchgd_encoded_dwell %>%
   ) %>% 
   ungroup() 
 
-maui_otp_unchnaged_table1 <- maui_unchgd_encoded_dwell %>%
+maui_otp_unchanged_table1 <- maui_unchgd_encoded_dwell %>%
   mutate(n_permits = case_when(
     encoded_sum %in% c(1,2,4,8) ~ 1,
     encoded_sum %in% c(3,5,6,9,10,12) ~ 2,
@@ -533,6 +533,18 @@ maui_otp_unchanged_table3 <- maui_unchgd_encoded_dwell %>%
   
   
 # ---------- Table 4 -------------- #
+
+# these should include all marked as commercial in the data + any we dont have dwell data for. ideally these lists are the same thing. 
+maui_otp_unchanged_table4 <- maui_unchanged %>% 
+  select(tmk, commercial, pittcode) %>% 
+  filter(!is.na(commercial))
+
+maui_otp_unchanged_table4_all <- maui_otp_unchanged_table1 %>% 
+  filter(in_dwelldat == FALSE)
+
+different
+
+
   
 # ------------- Final checks and save ----------------- #
 
