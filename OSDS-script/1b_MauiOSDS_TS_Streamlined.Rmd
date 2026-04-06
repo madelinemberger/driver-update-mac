@@ -9,13 +9,13 @@ output: html_document
 knitr::opts_chunk$set(echo = TRUE)
 
 library(here)
-
+library(janitor)
 source(here("workflow/setup.R"))
 
 
 ```
 
-### Step 0: Create authoritative tmk list
+### Step 0: SET UP and Create authoritative tmk lists
 
 To start, we'll read in the iws data and the old otp data and create 4 lists:
 - unchanged since OTP
@@ -152,7 +152,13 @@ maui_dwelltmks_forjoin_noTXyear <- maui_dwell_allentries %>%
     full_taxid = paste0("2",tax_id)) %>%
   distinct()
 
+# create a version with just the TMKS we need from our tmk master list 
 
+maui_dwell_alltmks <- maui_dwell_allentries %>% 
+  filter(full_taxid %in% master_tmk_list)
+
+write_csv(maui_dwell_alltmks,
+          file.path(driver_dir,"4_OSDS_N_Runoff/output-data/dwellings/maui_dwell_clean_alltmks.csv"))
 ```
 
 
@@ -203,6 +209,40 @@ are as follows:
 1. Assign class, using a custom function
 2. Create master list (table 1)
 3. Create tables 2 and 3 based on master list. 
+
+##### Wastewater Class Encoding Reference Table
+
+We only have classes 1 - 4 in this data. From the metadata, this
+represents:
+
+-   CLASS_I: Class I OSDS are those systems where the effluent is
+    subjected to soil treatment
+-   CLASS_II: Class II OSDS are septic systems discharging to a seepage
+    pit.\
+-   CLASS_III: Class III OSDS are aerobic systems discharging to a
+    seepage pit.
+-   CLASS_IV: Class IV OSDS are cesspools.\
+-   EFFLUENT: The total effluent flux in million gallons per day
+    discharged within the TMK parcel.
+    
+
+| Detected Classes | Encoded Sum | Description |
+| :--- | :---: | :--- |
+| **Class 1** | 1 | Cleanest Septic Type |
+| **Class 2** | 2 | Secondary Septic Type |
+| **Class 1 + 2** | 3 | **Combination of Class 1 + Class 2** |
+| **Class 3** | 4 | Aerobic System |
+| **Class 1 + 3** | 5 | Class 1 Septic + Aerobic |
+| **Class 2 + 3** | 6 | Class 2 Septic + Aerobic |
+| **Class 1 + 2 + 3** | 7 | Classes 1, 2, and 3 |
+| **Class 4** | 8 | Cesspool |
+| **Class 1 + 4** | 9 | Class 1 + Class 4 |
+| **Class 2 + 4** | 10 | Class 2 + Class 4 |
+| **Class 1 + 2 + 4** | 11 | Classes 1, 2, and 4 |
+| **Class 3 + 4** | 12 | Aerobic + Class 4 |
+| **Class 1 + 3 + 4** | 13 | Classes 1, 3, and 4 |
+| **Class 2 + 3 + 4** | 14 | Classes 2, 3, and 4 |
+| **All (1, 2, 3, 4)** | 15 | Full suite of permits |
 
 ```{r}
 
@@ -301,7 +341,7 @@ table1_tmk_registry <- master_clean %>%
     is_dwelling = any(full_taxid %in% maui_dwelltmks_forjoin_noTXyear$full_taxid),
     scenario = case_when(
       n_addresses == 1 & n_permits == 1 ~ "Simple",
-      n_addresses > 1 ~ "Multi-Building",
+      n_addresses > 1 ~ "Multi-Building", # change this to cards
       n_years > 1 ~ "Potential Upgrade",
       TRUE ~ "Multiple Permits Same Year"
     ),
@@ -388,11 +428,122 @@ In this step we have to add in the old data, but differentiate between data that
 
 These have no new permit data. But, it would be nice to get a better understanding of their bedroom # over time. We have to make one assumption in order to merge our dwell data with this older data. 
 
-Here, we'll join the bedroom data to the unchanged otp tmks. Then, sort into our 3 tables as before.
+Here, 
+1. apply class encoding 
+2. we'll join the bedroom data to the unchanged otp tmks. 
+3. Then, sort into our 3 tables as before.
 We'll save these ALONE just as the unchanged tmks
 
-```{r}
+We also use pittcode here to help us filter stuff out
 
+```{r unchanged}
+
+# first read in the dwelling data for all maui
+
+ maui_dwell_alltmks <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/dwellings/maui_dwell_clean_alltmks.csv")) %>% 
+  mutate(tmk = as.character(full_taxid))
+
+# encode classes
+
+maui_unchnaged_encoded <- maui_unchanged %>% 
+  pivot_longer(cols = starts_with("class"),
+               names_to = "class",
+               values_to = "quantity") %>% 
+  filter(quantity != 0) %>% 
+  filter(quantity != -9999) %>% 
+  rename(ttl_osds_2010 = osds_qty) %>%
+  mutate(osds_class_otp = case_when(
+    class == "class_iv" ~ 8, # cesspool 
+    class == "class_iii" ~ 4,
+    class == "class_ii" ~ 2,
+    class == "class_i" ~ 1
+  )) %>%
+  pivot_wider(id_cols = c("tmk","ttl_osds_2010","pittcode"), names_from = "class", values_from = c("osds_class_otp")) %>% 
+  mutate(encoded_sum = rowSums(across(starts_with("class")), na.rm = TRUE))
+
+# 2. join to dwells
+
+maui_unchgd_encoded_dwell <- left_join(maui_unchnaged_encoded, maui_dwell_alltmks, by = "tmk") %>% 
+  distinct()
+
+# 3. Create the three tables 
+
+maui_card_dwell_summary <-  maui_unchgd_encoded_dwell %>% 
+  group_by(tmk) %>% 
+  summarize(
+    n_buildings = n_distinct(card),
+    in_dwelldat = any(!is.na(tax_year))
+  ) %>% 
+  ungroup() 
+
+maui_otp_unchnaged_table1 <- maui_unchgd_encoded_dwell %>%
+  mutate(n_permits = case_when(
+    encoded_sum %in% c(1,2,4,8) ~ 1,
+    encoded_sum %in% c(3,5,6,9,10,12) ~ 2,
+    encoded_sum %in% c(7,11,13,14) ~ 3,
+    encoded_sum == 15 ~ 4,
+    TRUE ~ 99999),
+    n_years = 1,
+    min_year = 2010,
+    max_year = 2010,
+    n_addresses = "unknown",
+    status_since_otp = "unchanged since otp"
+  ) %>%
+  mutate(
+      scenario = case_when(
+      n_permits == 1 & n_years == 1 ~ "Simple",
+      n_addresses == "unknown" ~ "Unknown",
+      n_years > 1 ~ "Potential Upgrade",
+      TRUE ~ "Multiple Permits Same Year"
+    )) %>% 
+  left_join(maui_card_dwell_summary) %>% 
+  select(
+    tmk,
+    starts_with("n_"),
+    min_year,
+    max_year,
+    in_dwelldat,
+    status_since_otp
+  )
+  
+# ----------- Table 2 ------------------- # 
+
+# no commercial here - removed at the end of this code chunk
+
+maui_otp_unchanged_table2 <- maui_unchgd_encoded_dwell %>%
+  mutate(bed_rooms = as.numeric(bed_rooms)) %>% 
+  group_by(tmk, tax_year) %>% 
+  summarize(total_beds = sum(bed_rooms, na.rm = TRUE),
+            .groups = "drop") %>% 
+  pivot_wider(names_from = tax_year, values_from = total_beds, names_sort = TRUE) %>% 
+  select(-`NA`) %>% 
+  filter(!if_all(2:last_col(), is.na)) %>% 
+  rename_with(~ paste0("bedrooms_", .), matches("^[0-9]"))
+  
+
+
+# --------- Table 3 ---------------- #
+
+maui_otp_unchanged_table3 <- maui_unchgd_encoded_dwell %>% 
+  mutate(year = 2010) %>% 
+  select(tmk,year, encoded_sum) %>% 
+  distinct() %>% 
+  pivot_wider(id_cols = tmk,names_from = year, values_from = encoded_sum) %>% 
+  rename_with(~ paste0("osds_cl_", .), matches("^[0-9]"))
+  
+  
+# ---------- Table 4 -------------- #
+  
+# ------------- Final checks and save ----------------- #
+
+write_csv(maui_otp_unchnaged_table1,
+          file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/maui_tables/table1_tmk_registry_UNCHANGED.csv"))
+
+write_csv(maui_otp_unchanged_table2,
+          file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/maui_tables/table2_classes_UNCHANGED.csv"))
+
+write_csv(maui_otp_unchanged_table3,
+          file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/maui_tables/table3_classes_UNCHANGED.csv"))
 
 
 
@@ -401,5 +552,12 @@ We'll save these ALONE just as the unchanged tmks
 #### Updates
 
 These ones are present in OTP but also in the new data. 
+
+```{r updated}
+
+
+
+```
+
 
 ## Step 4: Create table 3b
