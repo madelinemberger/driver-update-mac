@@ -1032,9 +1032,10 @@ otp_unchanged_table4_cl <- otp_unchanged_table4_draft %>%
   pivot_wider(id_cols = tmk,names_from = year, values_from = commercial) %>% 
   mutate(tmk = as.character(tmk))
 
-# Merge new and old bedroom data to complete table 2. Manually filter out confirmed commercial, and apply gap fill logic:
-# if OTP data has nothing, and dwell have nothing, check google places
-# if OTP data has something and dwell have nothing, gapfill with OTP data
+# Merge new and old bedroom data to complete table 2. 
+# Manually filter out confirmed commercial, and apply gap fill logic:
+## if OTP data has nothing, and dwell have nothing, check google places
+## if OTP data has something and dwell have nothing, gapfill with OTP data
 
 
 otp_unchanged_table2_2010_complete <- otp_unchanged_table2_allyrs %>% 
@@ -1246,8 +1247,6 @@ year_built_for_all <- allyears_hi_dwell %>%
   ) %>%
   ungroup() %>% 
   mutate(tmk = as.integer(tmk))
-
-
 
 # now gapfill the rest. Logic:
 # if NEW are all empty but we do have OTP, add year built and gapfill with OTP from there (mutate 1)
@@ -1485,7 +1484,7 @@ table_1_complete <- table1_new_and_unchanged %>%
   mutate(bedroom_data_source = ifelse(is.na(bedroom_data_source),"Used dwell data",bedroom_data_source)) %>% 
   rename(in_dwelldat = is_dwelling) %>% 
   select(-gapfill_flag) %>% 
-  left_join(., class_flag_table1, by = "tmk") %>% 
+  left_join(., class_flag_table1, by = "tmk") %>% # add in flags from table 3
   mutate(upgrade_scenario = ifelse(is.na(upgrade_scenario),"no upgrade detected",upgrade_scenario))
 
 table_1_complete_v2 <- table1_new_and_unchanged %>%
@@ -1507,7 +1506,7 @@ table_1_complete_v2 <- table1_new_and_unchanged %>%
 
 table2_new_unchanged <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/hi_tables/table2_bedrooms_NEW_and_UNCHANGED.csv"))
 
-table_2_complete <- table2_updated %>% 
+table_2_complete <- table2_updated %>% # need to fix this
   rename_with(
     ~str_replace(., "newbeds","beds"),
     starts_with("new")
@@ -1552,7 +1551,7 @@ table_3_complete_v2 <- table3_new_and_unchanged %>%
 
 all(table_1_complete$tmk %in% table_3_complete_v2$tmk)
 
-# All TMKS in table 2 in table 2?
+# All TMKS in table 2 in table 1?
 
 all(table_2_complete$tmk %in% table_1_complete$tmk)
 
