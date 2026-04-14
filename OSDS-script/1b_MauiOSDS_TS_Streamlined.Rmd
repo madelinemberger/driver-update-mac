@@ -536,7 +536,7 @@ maui_otp_unchanged_table3 <- maui_unchgd_encoded_dwell %>%
 
 # these should include all marked as commercial in the data + any we dont have dwell data for. ideally these lists are the same thing. 
 maui_otp_unchanged_table4 <- maui_unchanged %>% 
-  select(tmk, commercial, pittcode) %>% 
+  select(tmk, commercial, pitt_code = pittcode) %>% 
   filter(!is.na(commercial)) %>%
   mutate(comm_assignment = case_when(
     # Exact Matches (High Priority)
@@ -582,7 +582,7 @@ maui_tmks_forgoogleplaces <- maui_otp_unchanged_table1 %>%
   
 # ------------- Final checks and save ----------------- #
 
-write_csv(maui_otp_unchnaged_table1,
+write_csv(maui_otp_unchanged_table1,
           file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/maui_tables/table1_tmk_registry_UNCHANGED.csv"))
 
 write_csv(maui_otp_unchanged_table2,
@@ -839,8 +839,7 @@ table3_updated_classmatch <-maui_updated_withClassEnc_New %>%
 # separate df to create a flag. you need the iws table 1 registry for this one
 
 table_1_new <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/maui_tables/table1_tmk_registry_all.csv")) %>% 
-  mutate(tmk = as.character(full_taxid)) %>% 
-  select(-full_taxid)
+  mutate(tmk = as.character(full_taxid))
 
 update_logic_df <- table3_updated_classmatch %>% 
   left_join(table_1_new, by = "tmk") %>% 
@@ -948,11 +947,14 @@ table_1_complete <- bind_rows(table_1_new, table_1_unchanged)
 table_2_unchanged <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/maui_tables/table2_classes_UNCHANGED.csv")) %>% 
   mutate(tmk = as.character(tmk))
 
-table_2_new_forbind <- table_2_new %>% 
+table_2_updated_forbind <- table_2_updatedGapfilled %>% 
   rename_with(~ str_replace(.x, "newbeds", "bedrooms_"), 
               starts_with("newbeds"))
 
-table_2_complete <- bind_rows(table_2_unchanged, table_2_new_forbind) #900 commerical?
+table_2_newonly <- table_2_new %>% 
+  filter(tmk %!in% table_2_updatedGapfilled$tmk)
+
+table_2_complete <- bind_rows(table_2_unchanged, table_2_updated_forbind, table_2_newonly) #900 commerical?
 
 table_1_complete_bedflags <- left_join(table_1_complete, bedFlags_forTable1, by = "tmk") %>% 
   distinct()
@@ -981,7 +983,7 @@ table_1_withClassflags <- table_1_complete_bedflags %>%
 
 table_4_unchanged <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/maui_tables/table4_commercial_UNCHANGED_draft.csv")) %>% 
   mutate(tmk = as.character(tmk)) %>% 
-  select(tmk, commercial, pitt_code = pittcode)
+  select(tmk, commercial, pitt_code)
 
 table_4_googleplaces <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/maui_tables/table4_googleplaces_UNCHANGED_draft.csv")) %>% 
   mutate(
@@ -997,7 +999,7 @@ table_4_withUpdates_forbind <- table4_withUpdates %>%
 table_4_new <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/maui_tables/table1_tmk_registry_commercial.csv")) %>% 
   mutate(tmk = as.character(full_taxid)) %>% 
   select(-full_taxid) %>% 
-  filter(tmk %!in% table4_withUpdates_forbind$tmk) %>% 
+  filter(tmk %!in% table_4_withUpdates_forbind$tmk) %>% 
   mutate(commercial = "unknown",
          pitt_code = -9999) %>% 
   select(tmk, commercial, pitt_code)
@@ -1010,8 +1012,6 @@ table_4_complete <- bind_rows(table_4_unchanged,
 
 # add pittcode to unknown. add flag for google places.
 
-maui_pittcodes_all <- maui_dwell_alltmks %>% 
-  select(full_taxid,pit)
 
 table_4_complete_cl <- table_4_complete %>% 
   mutate(
