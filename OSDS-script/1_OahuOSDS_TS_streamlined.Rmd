@@ -14,15 +14,298 @@ source(here("workflow/setup.R"))
 
 ```
 
+### Step 0: Create authorative TMK lists
+
+```{r}
+
+library(janitor)
+# read in new permits
+
+iws_permit_data <- read_csv(file.path(data_dir, "osds/shared-data/2009_Present_IWSList_Permits.csv"))
+
+iws_oahu_permits <- iws_permit_data %>% 
+  mutate(tmk_char = as.character(TMK)) %>% 
+  filter(str_starts(tmk_char,"1")) %>% 
+  rename(full_taxid = tmk_char) %>% # this is where fulltax id is created
+    rowid_to_column("permit_id") %>% 
+  mutate(approval_date = mdy(FinalApprovalDate),
+         year = year(approval_date)) %>% 
+  clean_names()
+
+iws_oahu_permits_tmk <- iws_oahu_permits %>% pull(tmk)
+
+# read in old otp
+
+otp_oahu_raw <- st_read(file.path(driver_dir,"4_OSDS_N_Runoff/large-input-data/OSDS_HIGIS_2010/osds_oah.shp")) %>% 
+  clean_names() %>% 
+  mutate(tmk = as.character(tmk_9)) %>% 
+  st_drop_geometry()
+
+otp_oahu_tmk <- otp_oahu_raw %>%
+  pull(tmk)
+
+# new ones:
+
+oahu_unchanged <- otp_oahu_raw %>% 
+  filter(tmk %!in% iws_oahu_permits_tmk) #12519
+
+unchanged_tmks <- oahu_unchanged %>% pull(tmk) %>% unique() #12461
+
+oahu_updated <- otp_oahu_raw %>% 
+  mutate(tmk = as.character(tmk)) %>% 
+  filter(tmk %in% iws_oahu_permits_tmk) #1165
+
+updated_tmks <- oahu_updated %>% pull(tmk) %>% unique() # 1164
+
+oahu_new <- iws_oahu_permits %>% 
+  filter(tmk %!in% otp_oahu_tmk) # 314
+
+new_tmks <- oahu_new %>% pull(tmk) %>% unique() #
+# create authoritative tmk list - add ups!
+
+master_tmk_list <- c(iws_oahu_permits_tmk,otp_oahu_tmk)
+master_tmk_list <- unique(master_tmk_list) # 13873
+
+
+
+```
+
 ### Step 1: Clean Up Dwell Data
 
 About dwelling data: - obtained from each county, and maintained by each county differently - records are created for tax assessment purposes, and therefore usually have two key time columns: year built and year assessed. - if the tmk has a second card number, that usually indicates an auxiliary building or additional structure built on the property.
 
-**Data Cleaning steps:** - parse data into correct columns (for HI, this was very sketchy) - look for exact duplicates of data with ALL COLUMNS - note which columns are differentiating them - note: you canʻt do this for HI or Oahu because the parsing is so sketch - select columns of interest - look for duplicates again - if we find duplicates, need to figure out which column is differentiating dwellings. this is very important. we also need to add a unique ID to each row.
+**Data Cleaning steps:** 
+- parse data into correct columns (for HI, this was very sketchy) 
+- look for exact duplicates of data with ALL COLUMNS 
+- note which columns are differentiating them 
+- note: you canʻt do this for HI or Oahu because the parsing is so sketch 
+- select columns of interest 
+- look for duplicates again 
+- if we find duplicates, need to figure out which column is differentiating dwellings. this is very important. we also need to add a unique ID to each row.
 
 Parse Oahu Raw files, join all years
 
-This can all be found in the OG driver repository on github. Here I'll start from the clean CSV I wrote to generate products for QA QC report 2
+Part of this can all be found in the OG driver repository on github. 
+
+The earlier years I got later (2010 - 2014) I'll do here
+
+```{r}
+
+# read in packge
+library(readr)
+
+# define col specs
+col_specs_old <- fwf_positions(
+  start = c(
+    1, 2, 15, 20, 24, 44, 48, 52, 72, 92, 112, 132, 152, 154,
+    179, 186, 193, 199, 201, 202, 206, 211, 216, 218, 238, 239,
+    259, 279, 299, 319, 343, 355, 357, 361, 364, 384, 404, 434,
+    438, 443, 447, 448, 470, 479, 490, 495, 503, 510
+  ),
+  end = c(
+    1, 14, 18, 23, 43, 44, 47, 71, 91, 111, 131, 151, 153, 173,
+    180, 187, 194, 200, 201, 201, 207, 212, 217, 237, 238, 258,
+    278, 298, 318, 342, 354, 356, 360, 363, 383, 403, 433, 437,
+    442, 446, 448, 469, 478, 489, 494, 502, 509, 515 
+  )
+)
+
+# try new ones
+
+col_specs_new <- fwf_positions(
+  start = c(
+    1, 15, 20, 24, 44, 49, 52, 72, 92, 112, 132, 152, 154, 
+    179, 186, 193, 199, 201, 202, 206, 211, 217, 218, 238, 
+    239, 259, 279, 299, 319, 343, 349, 356, 358, 365, 373, 
+    375, 379, 382, 402, 422, 443, 448, 452, 453, 457, 479, 
+    488, 499, 504, 512, 519
+  ),
+  end = c(
+    14, 19, 23, 43, 48, 51, 71, 91, 111, 131, 151, 153, 178, 
+    185, 192, 198, 200, 201, 205, 210, 216, 217, 237, 238, 
+    258, 278, 298, 318, 342, 348, 355, 357, 364, 372, 374, 
+    378, 381, 401, 421, 442, 447, 451, 452, 456, 478, 487, 
+    498, 503, 511, 518, 525 # Adjust final end based on actual row length
+  ),
+  col_names = c(
+    "tax_map_key", "parcel_year", "card_no", "building_no", "indicator", 
+    "story_height", "roof_design", "roof_structure", "roof_material", 
+    "ext_wall", "framing", "style_occupancy", "occupancy", "full_baths", 
+    "half_baths", "add_fixtures", "total_fixtures", "ac", "attic_rating", 
+    "total_rooms", "bedrooms", "family_rooms", "foundation", "basement", 
+    "floor_construction", "flooring", "int_wall_struct", "int_wall_mat", 
+    "ceiling", "rec_room_size", "misc_desc_1", "misc_qty_1", "misc_desc_2", 
+    "misc_qty_2", "condo_level", "condo_type", "condo_view", "condo_parking", 
+    "condo_style", "condo_common", "year_built", "eff_year_built", 
+    "phys_cond", "bldg_code", "bldg_grade", "bldg_shape", "cost_design_pct", 
+    "econ_cond_factor", "pct_complete", "ground_floor_area", "living_area"
+  )
+)
+
+# read in each year and check how it worked out
+
+oahu_2014 <- read_fwf(
+  file.path(driver_dir,"4_OSDS_N_Runoff/large-input-data/Dwelling_Data_Raw/Oahu_2010 to 2014-Dweldat_04142026/2014-Dweldat.txt"),
+  col_positions = col_specs_new,
+  col_types = cols(.default = col_character())
+) %>% mutate(across(everything(), ~trimws(.)))
+
+
+oahu_2013 <- read_fwf(
+  file.path(driver_dir,"4_OSDS_N_Runoff/large-input-data/Dwelling_Data_Raw/Oahu_2010 to 2014-Dweldat_04142026/2013-Dweldat.txt"),
+  col_positions = col_specs_new,
+  col_types = cols(.default = col_character())
+) %>% mutate(across(everything(), ~trimws(.)))
+
+
+oahu_2012 <- read_fwf(
+  file.path(driver_dir,"4_OSDS_N_Runoff/large-input-data/Dwelling_Data_Raw/Oahu_2010 to 2014-Dweldat_04142026/2012-Dweldat.txt"),
+  col_positions = col_specs_new,
+  col_types = cols(.default = col_character())
+) %>% mutate(across(everything(), ~trimws(.)))
+
+
+
+oahu_2011 <- read_fwf(
+  file.path(driver_dir,"4_OSDS_N_Runoff/large-input-data/Dwelling_Data_Raw/Oahu_2010 to 2014-Dweldat_04142026/2011-Dweldat.txt"),
+  col_positions = col_specs_new,
+  col_types = cols(.default = col_character())
+) %>% mutate(across(everything(), ~trimws(.)))
+
+
+oahu_2010 <- read_fwf(
+  file.path(driver_dir,"4_OSDS_N_Runoff/large-input-data/Dwelling_Data_Raw/Oahu_2010 to 2014-Dweldat_04142026/2010-Dweldat.txt"),
+  col_positions = col_specs_new,
+  col_types = cols(.default = col_character())
+) %>% mutate(across(everything(), ~trimws(.)))
+
+```
+
+Make sure columns we need are clean: 
+
+```{r}
+
+
+check_parsing_quality <- function(df, year_label = "Unknown Year") {
+  # 1. Calculate lengths
+  results <- df %>%
+    mutate(
+      len_year = nchar(as.character(year_built)),
+      is_messy = len_year != 4
+    )
+  
+  # 2. Count totals
+  total_rows <- nrow(results)
+  messy_rows <- results %>% filter(is_messy)
+  n_messy    <- nrow(messy_rows)
+  pct_messy  <- (n_messy / total_rows) * 100
+  
+  # 3. Print a pretty summary to the console
+  cat("\n==========================================\n")
+  cat("PARSING REPORT FOR:", year_label, "\n")
+  cat("Total Rows:    ", total_rows, "\n")
+  cat("Clean Rows:    ", total_rows - n_messy, "\n")
+  cat("Messy Rows:    ", n_messy, "\n")
+  cat("Error Rate:    ", round(pct_messy, 2), "%\n")
+  
+  if(n_messy > 0) {
+    cat("\nCommon 'Messy' Lengths detected:\n")
+    print(table(messy_rows$len_year))
+    
+    cat("\nExample of messy value: '", head(messy_rows$year_built, 1), "'\n")
+  }
+  cat("==========================================\n")
+  
+  # Return the messy data invisibly so you can assign it if needed
+  return(invisible(messy_rows))
+}
+
+oahu_2014_messy <- check_parsing_quality(oahu_2014, "2014 Data")
+oahu_2013_messy <- check_parsing_quality(oahu_2013, "2013 Data")
+oahu_2012_messy <- check_parsing_quality(oahu_2012, "2012 Data")
+oahu_2011_messy <- check_parsing_quality(oahu_2011, "2011 Data")
+oahu_2010_messy <- check_parsing_quality(oahu_2010, "2012 Data")
+
+# check bedroom
+
+check_bedroom_quality <- function(df, year_label = "Dataset") {
+  
+  # 1. Clean and standardize the bedroom column
+  # We convert to character and trim to catch "00", "0", or "   0"
+  results <- df %>%
+    mutate(
+      bd_char = str_trim(as.character(bedrooms)),
+      status = case_when(
+        is.na(bedrooms) | bd_char == "" | bd_char == "NA" ~ "Missing/NA",
+        bd_char %in% c("0", "00", "000") ~ "Zero (00)",
+        TRUE ~ "Valid Count"
+      )
+    )
+  
+  # 2. Generate summary stats
+  summary_table <- table(results$status, useNA = "always")
+  total_rows <- nrow(df)
+  n_na   <- sum(results$status == "Missing/NA")
+  n_zero <- sum(results$status == "Zero (00)")
+  
+  # 3. Print the report
+  cat("\n==========================================\n")
+  cat("BEDROOM QUALITY REPORT:", year_label, "\n")
+  cat("Total Records: ", total_rows, "\n")
+  cat("------------------------------------------\n")
+  cat("NA / Missing:  ", n_na, " (", round(n_na/total_rows*100, 1), "%)\n")
+  cat("Zero (00):     ", n_zero, " (", round(n_zero/total_rows*100, 1), "%)\n")
+  cat("Valid (> 0):   ", sum(results$status == "Valid Count"), "\n")
+  cat("==========================================\n")
+  
+  # Return the summarized counts as a data frame
+  return(as.data.frame(summary_table))
+}
+
+check_bedroom_quality(oahu_2014, "2014")
+
+table(oahu_2014$indicator, is.na(oahu_2014$bedrooms))
+
+# lets just join and filer if possible
+
+oahu_2010_2014_cl <- rbind(
+  oahu_2014,
+  oahu_2013,
+  oahu_2012,
+  oahu_2011,
+  oahu_2010
+) %>% 
+  select(tax_map_key,
+         tax_year = parcel_year,
+         card_no,
+         total_rooms,
+         bedrooms,
+         year_built,
+         eff_year_built)
+
+oahu_cl_tmk <- oahu_2010_2014_cl %>% 
+  mutate(tmk = substr(tax_map_key,1,9))
+
+
+iws_permit_data <- read_csv(file.path(data_dir, "osds/shared-data/2009_Present_IWSList_Permits.csv"))
+
+iws_oahu_permits <- iws_permit_data %>% 
+  mutate(tmk_char = as.character(TMK)) %>% 
+  filter(str_starts(tmk_char,"1")) %>% 
+  rename(full_taxid = tmk_char) %>% # this is where fulltax id is created
+    rowid_to_column("permit_id") %>% 
+  mutate(approval_date = mdy(FinalApprovalDate),
+         year = year(approval_date))
+
+oahu_dwell_osds_2010_2014 <- oahu_cl_tmk %>% 
+  filter(tmk %in% master_tmk_list) # 9759
+
+
+write_csv(oahu_dwell_osds_2010_2014,
+          file.path(driver_dir,"4_OSDS_N_Runoff/output-data/dwellings/oahu_dwell_clean_2010_2014.csv"))
+
+```
+
 
 This report should tell us:
 
@@ -41,15 +324,29 @@ Resources:
 
 library(data.table)
 
-oahu_dwell_path <- file.path(driver_dir,"4_OSDS_N_Runoff/output-data/dwellings/oahu_dwell_clean_2015_2020.csv")
+oahu_dwell_path_2015_2020 <- file.path(driver_dir,"4_OSDS_N_Runoff/output-data/dwellings/oahu_dwell_clean_2015_2020.csv")
 
-oahu_dwells_cleanedup <- fread(file = oahu_dwell_path)
 
-oahu_dwells_cleanedup <- oahu_dwells_cleanedup %>% 
-  mutate(full_taxid = substr(paste0(jurisid,taxid),1,9))
+oahu_dwell_path_2010_2014 <- file.path(driver_dir,"4_OSDS_N_Runoff/output-data/dwellings/oahu_dwell_clean_2010_2014.csv")
 
-length(unique(oahu_dwells_cleanedup$full_taxid)) #how many? 14,8527
+oahu_dwells_new <- fread(file = oahu_dwell_path_2015_2020) %>% 
+  mutate(tmk = substr(paste0(jurisid,taxid),1,9)) %>% 
+  filter(tmk %in% master_tmk_list)
 
+oahu_dwells_old <- fread(file = oahu_dwell_path_2010_2014) %>% 
+  select(-tax_map_key, -eff_year_built)
+
+oahu_dwells_all <- oahu_dwells_new %>% 
+  select(tmk,tax_year,card_no = card, total_rooms, bedrooms,year_built) %>% 
+  rbind(oahu_dwells_old)
+
+write_csv(oahu_dwells_all,
+         file.path(driver_dir,"4_OSDS_N_Runoff/output-data/dwellings/oahu_dwell_clean_alltmks.csv"))
+
+
+length(unique(oahu_dwells_all$tmk)) #how many? 11163
+
+length(unique(master_tmk_list)) #13873 <- so some of these are commercial or not in dwell
 
 ```
 
@@ -60,27 +357,28 @@ length(unique(oahu_dwells_cleanedup$full_taxid)) #how many? 14,8527
 iws_permit_data <- read_csv(file.path(data_dir, "osds/shared-data/2009_Present_IWSList_Permits.csv"))
 
 iws_oahu_permits <- iws_permit_data %>% 
-  mutate(tmk_char = as.character(TMK)) %>% 
-  filter(str_starts(tmk_char,"1")) %>% 
-  rename(full_taxid = tmk_char) %>% # this is where fulltax id is created
-    rowid_to_column("permit_id") %>% 
+  mutate(tmk = as.character(TMK)) %>% 
+  filter(str_starts(tmk,"1")) %>%
+  rowid_to_column("permit_id") %>% 
   mutate(approval_date = mdy(FinalApprovalDate),
-         year = year(approval_date)) #1741 rows, # 1412 tax ids
+         year = year(approval_date)) %>% 
+  clean_names() %>% 
+  mutate(tmk = as.character(tmk))
 
-tmks_permits <- unique(iws_oahu_permits$full_taxid)
+tmks_permits <- unique(iws_oahu_permits$tmk) #1412
 
 # execute join to see which tmks have dwell data
 
-iws_oahu_dwell_join <- inner_join(iws_oahu_permits, oahu_dwells_cleanedup, by = "full_taxid") %>% 
-  distinct() #28215 rows and 1166 tmks
+iws_oahu_dwell_join <- inner_join(iws_oahu_permits, oahu_dwells_all, by = "tmk") %>% 
+  distinct() 
 
 iws_oahu_dwell_join_norepeats <- iws_oahu_permits %>% 
-  filter(full_taxid %in% oahu_dwells_cleanedup$full_taxid) #1355 rows, 1666 tmks yay!!
+  filter(tmk %in% oahu_dwells_all$tmk) #1369, 1178
 
 # now filter out the ones that do not have dwelling data and save
 
 iws_oahu_NOdwell <- iws_oahu_permits %>% 
-  filter(full_taxid %!in% iws_oahu_dwell_join$full_taxid) # 386. perfect
+  filter(tmk %!in% iws_oahu_dwell_join$tmk) # 372, 234 
 
 write_csv(iws_oahu_NOdwell,
          file.path(driver_dir,"4_OSDS_N_Runoff/output-data/qaqc/oahu_iwspermits_nodwellinginfo.csv"))
@@ -94,6 +392,7 @@ write_csv(iws_oahu_NOdwell,
 Instead of doing a bunch of stuff that identifies easy, tricky and hard scenarios, I'm condensing everything here into one big clean. are as follows: 1. Assign class, using a custom function 2. Create master list (table 1) 3. Create tables 2 and 3 based on master list.
 
 ```{r}
+
 library(janitor)
 # custom functions
 calc_mode <- function(x, na.rm = FALSE) {
@@ -145,7 +444,7 @@ master_clean <- iws_oahu_permits %>%
                            paste(project_street_address, "-", project_street_address2)),
     address_lower = str_trim(str_to_lower(address_full)),
     osds_class = assign_osds_class(permit_type, disposal_type),
-    dwelling_yn = ifelse(tmk %in% iws_oahu_NOdwell$TMK,"no","yes")
+    dwelling_yn = ifelse(tmk %in% iws_oahu_NOdwell$tmk,"no","yes")
   ) %>%
   select(-permit_id) %>% 
   distinct() # this removes any EXACT duplicates. 
@@ -160,7 +459,7 @@ master_clean2 <- iws_oahu_permits %>%
                            paste(project_street_address, "-", project_street_address2)),
     address_lower = str_trim(str_to_lower(address_full)),
     osds_class = assign_osds_class(permit_type, disposal_type),
-    dwelling_yn = ifelse(tmk %in% iws_oahu_NOdwell$TMK,"no","yes")
+    dwelling_yn = ifelse(tmk %in% iws_oahu_NOdwell$tmk,"no","yes")
   ) %>%
   select(-permit_id) 
 
@@ -185,14 +484,14 @@ length(unique(master_clean$tmk)) # 1412, so we still have all tmks represented a
 ### TABLE 1 #########
 
 table1_tmk_registry <- master_clean %>%
-  group_by(full_taxid) %>%
+  group_by(tmk) %>%
   summarize(
     n_permits = n(),
     n_years = n_distinct(year),
     n_addresses = n_distinct(address_lower),
     min_year = min(year),
     max_year = max(year),
-    is_dwelling = any(full_taxid %in% oahu_dwells_cleanedup$full_taxid),
+    is_dwelling = any(tmk %in% oahu_dwells_all$tmk),
     scenario = case_when(
       n_addresses == 1 & n_permits == 1 ~ "Simple",
       n_addresses > 1 ~ "Multi-Building",
@@ -204,35 +503,32 @@ table1_tmk_registry <- master_clean %>%
 
 #### TABLE 2 A and 2 B ########
 
-table2a_bedrooms <- oahu_dwells_cleanedup %>%
-  filter(full_taxid %in% master_clean$full_taxid) %>%
+table2a_bedrooms <- oahu_dwells_all %>%
+  filter(tmk %in% master_clean$tmk) %>%
   mutate(bedrooms = as.numeric(bedrooms)) %>%
-  group_by(full_taxid, tax_year) %>%
+  group_by(tmk, tax_year) %>%
   summarize(
     total_beds = sum(bedrooms, na.rm = TRUE),
     # mode_beds = calc_mode(rmbed, na.rm = TRUE), # Uncomment if you want mode instead
     .groups = "drop"
   ) %>%
-  pivot_wider(names_from = tax_year, values_from = total_beds, names_sort = TRUE) %>% 
-  rename(tmk = full_taxid)
+  pivot_wider(names_from = tax_year, values_from = total_beds, names_sort = TRUE)
 
-table2b_bedrooms <- oahu_dwells_cleanedup %>%
-  filter(full_taxid %in% master_clean$full_taxid) %>%
+table2b_bedrooms <- oahu_dwells_all %>%
+  filter(tmk %in% master_clean$tmk) %>%
   mutate(bedrooms = as.numeric(bedrooms)) %>%
-  group_by(full_taxid, tax_year) %>%
+  group_by(tmk, tax_year) %>%
   summarize(
     #total_beds = sum(bedrooms, na.rm = TRUE),
     mode_beds = calc_mode(bedrooms, na.rm = TRUE), # Uncomment if you want mode instead
     .groups = "drop"
   ) %>%
-  pivot_wider(names_from = tax_year, values_from = mode_beds, names_sort = TRUE) %>% 
-  rename(tmk = full_taxid)
-
+  pivot_wider(names_from = tax_year, values_from = mode_beds, names_sort = TRUE)
 
 #### TABLE 3 ####
 
 table3_classes <- master_clean %>%
-  group_by(full_taxid, year) %>%
+  group_by(tmk, year) %>%
   summarize(
     all_classes_text = paste(sort(unique(osds_class)), collapse = ", "),
     .groups = "drop"
@@ -243,7 +539,7 @@ table3_classes <- master_clean %>%
     (str_detect(all_classes_text, "3") * 4) +
     (str_detect(all_classes_text, "4") * 8)
   ) %>%
-  select(full_taxid, year, encoded_sum) %>%
+  select(tmk, year, encoded_sum) %>%
   pivot_wider(names_from = year, values_from = encoded_sum, names_sort = TRUE)
 
 # Filter out ommercial, ie dwell = no
@@ -271,3 +567,659 @@ write_csv(table3_classes,
 ```
 
 ### Step 3: Compare and Integrate Past Datasets
+
+#### Unchanged
+
+```{r}
+
+# first read in the dwelling data for all kauai
+
+oahu_dwell_alltmks <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/dwellings/oahu_dwell_clean_alltmks.csv")) %>% 
+  mutate(tmk = as.character(tmk))
+
+
+# check on duplicates in unchanged
+oahu_dupes <- oahu_unchanged %>% 
+  # Count occurrences per TMK and Class
+  group_by(tmk, osds_class) %>% 
+  filter(n() > 1) %>% 
+  arrange(tmk) %>% 
+  select(-fid_1) %>% 
+  distinct() #92
+
+oahu_xytmk_dupes <- oahu_unchanged %>% 
+  select(-fid_1, -x,-y) %>% 
+  distinct() %>% 
+  filter(ttl_osds != 0) %>% 
+  # Count occurrences per TMK and X and Y
+  group_by(tmk) %>%
+  filter(n_distinct(x,y) > 1) %>% 
+  ungroup() %>% 
+  arrange(tmk,x) %>% 
+  select(tmk, x, y, everything())
+
+# the only thing that is different about these entires are the lat lon. which could mean multiple buildings, but I am suspicous that there are two buildings each with 10 cesspools, so am leaning towards simply removing the duplciates. check dwell data just to be sure: 
+
+oahu_unch_dupes_dwell <- oahu_dwells_all %>% 
+  filter(tmk %in% oahu_dupes$tmk) %>% 
+  select(tmk, year_built, card_no, total_rooms,bedrooms) %>% 
+  distinct()
+
+# one more way of checking for duplicates
+
+oahu_hidden_dupes <- oahu_unchanged %>%
+  # Group by everything EXCEPT the things you want to drop
+  group_by(across(-c(fid_1, x, y))) %>%
+  # Filter for rows that have "twins"
+  filter(n() > 1) %>%
+  arrange(tmk)
+
+# encode classes
+
+oahu_unchanged_cl <- oahu_unchanged %>% 
+  select(tmk, osds_class, ttl_osds, type, x,y)
+
+oahu_unchanged_multiples <- oahu_unchanged_cl %>% 
+  filter(osds_class == "Multiple")
+
+# encode classes
+oahu_unchanged_encoded <- oahu_unchanged_cl %>% 
+  #filter(if_any(starts_with("class"), ~ .x != 0 & !is.na(.x))) %>% # remove 147 rows
+  #select(-x,-y) %>% 
+  #distinct() %>%  # remove 6 more rows
+  # pivot_longer(cols = starts_with("class"),
+  #              names_to = "class",
+  #              values_to = "quantity") %>% 
+  # filter(quantity != 0) %>% 
+  # filter(quantity != -9999) %>% 
+  rename(ttl_osds_2010 = ttl_osds) %>%
+  mutate(osds_class_otp = case_when(
+    osds_class %in% "Class IV" ~ 8, # cesspool 
+    osds_class %in% "Class III" ~ 4,
+    osds_class %in% "Class II" ~ 2,
+    osds_class %in% "Class I" ~ 1,
+    osds_class %in% "Multiple"  ~ 9, #multiple, onc is a cesspool.
+    TRUE ~ NA_real_
+  )) %>%
+  pivot_wider(
+    id_cols = c("tmk", "ttl_osds_2010"), 
+    names_from = "osds_class", 
+    values_from = "osds_class_otp",
+    values_fn = max # sum or max? thinking max because I think these are multi buildings. 
+  ) %>% 
+  rename(Class_mult = Multiple) %>% 
+  mutate(encoded_sum = rowSums(across(starts_with("Class")), na.rm = TRUE))
+
+# check we didnt loose any tmks - we didn, but some duplicated dropped out
+
+n_distinct(oahu_unchanged_encoded$tmk, na.rm = TRUE) == n_distinct(oahu_unchanged$tmk, na.rm = TRUE)
+setdiff(kauai_unchanged_encoded$tmk,kauai_unchanged$tmk)
+  
+
+# 2. join to dwells
+
+oahu_unchgd_encoded_dwell <- left_join(oahu_unchanged_encoded, oahu_dwell_alltmks, by = "tmk") %>% 
+  distinct()
+
+# 3. Create the three tables 
+
+oahu_card_dwell_summary <-  oahu_unchgd_encoded_dwell %>% 
+  group_by(tmk) %>% 
+  summarize(
+    n_buildings = n_distinct(card_no),# remember this can also be units. 
+    in_dwelldat = any(!is.na(tax_year))
+  ) %>% 
+  ungroup() 
+
+oahu_otp_unchanged_table1 <- oahu_unchgd_encoded_dwell %>%
+  mutate(n_permits = case_when(
+    encoded_sum %in% c(1,2,4,8) ~ 1,
+    encoded_sum %in% c(3,5,6,9,10,12) ~ 2,
+    encoded_sum %in% c(7,11,13,14) ~ 3,
+    encoded_sum == 15 ~ 4,
+    TRUE ~ 99999),
+    n_years = 1,
+    min_year = 2010,
+    max_year = 2010,
+    n_addresses = "unknown",
+    status_since_otp = "unchanged since otp"
+  ) %>%
+  left_join(oahu_card_dwell_summary) %>% 
+  mutate(
+      scenario = case_when(
+      n_permits == 1 & n_years == 1 & n_buildings == 1 ~ "Simple",
+      n_buildings > 1 ~ "Multi-building",
+      n_years > 1 ~ "Potential Upgrade",
+      TRUE ~ "Unknown"
+    )) %>%
+    select(
+    tmk,
+    starts_with("n_"),
+    min_year,
+    max_year,
+    in_dwelldat,
+    scenario,# might not need this
+    status_since_otp
+  )
+  
+# ----------- Table 2 ------------------- # 
+
+# no commercial here - removed at the end of this code chunk
+
+oahu_otp_unchanged_table2 <- oahu_unchgd_encoded_dwell %>%
+  mutate(bed_rooms = as.numeric(bedrooms)) %>% 
+  group_by(tmk, tax_year) %>% 
+  summarize(total_beds = sum(bed_rooms, na.rm = TRUE),
+            .groups = "drop") %>% 
+  pivot_wider(names_from = tax_year, values_from = total_beds, names_sort = TRUE) %>% 
+  select(-`NA`) %>% 
+  filter(!if_all(2:last_col(), is.na)) %>% # remove commercial
+  rename_with(~ paste0("bedrooms_", .), matches("^[0-9]"))
+  
+
+
+# --------- Table 3 ---------------- #
+
+oahu_otp_unchanged_table3 <- oahu_unchgd_encoded_dwell %>% 
+  mutate(year = 2010) %>% 
+  select(tmk,year, encoded_sum) %>% 
+  distinct() %>% 
+  pivot_wider(id_cols = tmk,names_from = year, values_from = encoded_sum) %>% 
+  rename_with(~ paste0("osds_cl_", .), matches("^[0-9]"))
+  
+  
+# ---------- Table 4 -------------- #
+
+# these should include all marked as commercial in the data + any we dont have dwell data for
+oahu_otp_unchanged_commxy <- oahu_unchanged %>% 
+  select(tmk, x,y)
+
+oahu_otp_unchanged_table4_googleplaces <- oahu_otp_unchanged_table1 %>% 
+  filter(in_dwelldat == FALSE) %>% 
+  left_join(oahu_unchanged, by = "tmk") %>% 
+  select(tmk, x, y, in_dwelldat)
+
+# for oahu we'll just go with this
+
+
+# ------------- Final checks and save ----------------- #
+
+write_csv(oahu_otp_unchanged_table1,
+          file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/oahu_tables/table1_tmk_registry_UNCHANGED.csv"))
+
+write_csv(oahu_otp_unchanged_table2,
+          file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/oahu_tables/table2_classes_UNCHANGED.csv"))
+
+write_csv(oahu_otp_unchanged_table3,
+          file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/oahu_tables/table3_classes_UNCHANGED.csv"))
+
+write_csv(oahu_otp_unchanged_table4_googleplaces,
+          file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/oahu_tables/table4_commercial_UNCHANGED_draft.csv"))
+
+
+
+```
+
+
+#### Updated
+
+```{r updated}
+
+# ------------ gap fill bed rooms --------------- #
+
+table_2_new <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/oahu_tables/table2a_bedrooms_sum.csv")) %>% 
+  mutate(tmk = as.character(tmk)) %>% 
+  rename_with(., ~paste0("newbeds",.x), .cols= !tmk)
+
+# oahu doesn't have any info other than xy, and osds class
+oahu_updated_forjoin <- oahu_updated %>% 
+  select(tmk,x,y) 
+ # backfill with pittcode
+
+# are all the updated ones in table 2? if they arenʻt are all those commercial?
+
+table_2_updated <- table_2_new %>% 
+  filter(tmk %in% oahu_updated_forjoin$tmk) # missing alott - check to see if those are commercial, or they are new?
+
+updates_notInTable2 <- setdiff(oahu_updated_forjoin$tmk, table_2_updated$tmk) # 114 
+
+# these should go in table 4
+table4_withUpdates <- oahu_updated_forjoin %>% 
+  filter(tmk %in% updates_notInTable2)
+  
+
+# since we don't have old data, we can skip the gapfilling. but, to match the other data, we need to create the bed trend, gapfill flag and years built
+
+
+
+
+
+# --------- gap fill class ------------ # 
+
+# read in table 3 class 
+
+table_3_new <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/oahu_tables/table3_class_allcsv")) %>% 
+  rename_with(., ~paste0("newclass",.x), .cols= !tmk) %>% 
+  mutate(tmk = as.character(tmk))
+
+# join to maui updated, with specific columsn accepted. also do encoding
+
+oahu_updated_withClass_enc <- oahu_updated %>% 
+  #filter(if_any(starts_with("class"), ~ .x != 0 & !is.na(.x))) %>% # remove 147 rows
+  #select(-x,-y) %>% 
+  #distinct() %>%  # remove 6 more rows
+  # pivot_longer(cols = starts_with("class"),
+  #              names_to = "class",
+  #              values_to = "quantity") %>% 
+  # filter(quantity != 0) %>% 
+  # filter(quantity != -9999) %>% 
+  rename(ttl_osds_2010 = ttl_osds) %>%
+  mutate(osds_class_otp = case_when(
+    osds_class %in% "Class IV" ~ 8, # cesspool 
+    osds_class %in% "Class III" ~ 4,
+    osds_class %in% "Class II" ~ 2,
+    osds_class %in% "Class I" ~ 1,
+    osds_class %in% "Multiple"  ~ 9, #multiple, onc is a cesspool.
+    TRUE ~ NA_real_
+  )) %>%
+  pivot_wider(
+    id_cols = c("tmk", "ttl_osds_2010"), 
+    names_from = "osds_class", 
+    values_from = "osds_class_otp",
+    values_fn = max # sum or max? thinking max because I think these are multi buildings. 
+  ) %>% 
+  rename(Class_mult = Multiple) %>% 
+  mutate(encoded_sum = rowSums(across(starts_with("Class")), na.rm = TRUE))
+
+oahu_updated_withClassEnc_New <- oahu_updated_withClass_enc %>%
+  left_join(table_3_new, by = "tmk")
+
+# get cols to run match on
+class_cols <- oahu_updated_withClassEnc_New %>% select(starts_with("new")) %>% names()
+
+table3_updated_classmatch <- oahu_updated_withClassEnc_New %>% 
+  mutate(
+   # CREATE MATCH INDEX: 
+    # This finds the index (1, 2, 3...) of the first column that matches OTP bedrooms
+    # We use matrix comparison (df[cols] == df$otp) to keep it vectorized
+    match_index = {
+      match_matrix <- pick(all_of(class_cols)) == encoded_sum
+      # replace NAs with FALSE so max.col doesn't trip
+      match_matrix[is.na(match_matrix)] <- FALSE 
+      
+      # If a row has at least one match, get the index. Otherwise, NA.
+      if_else(rowSums(match_matrix) > 0, max.col(match_matrix, ties.method = "first"), NA_integer_)
+    },
+    
+    # CREATE MATCH NAME: Convert that index (e.g., 1) into the column name (e.g., "new_2010")
+    match_name = class_cols[match_index],
+    # COLUMN 1: The Match Year Flag
+    # Priority: If it matches, show which one. Otherwise, it's unmatched.
+    # match_status = case_when(
+    #   !is.na(match_index) ~ paste0("Matches with ", match_name),
+    #   TRUE                ~ "Unmatched"
+    #),
+
+    # COLUMN 3: Data Presence (The "All Zeros/NAs" check)
+    # Checks if ALL columns starting with 'NEW' are either 0 or NA
+    data_presence = if_else(
+      if_all(starts_with("new"), ~ .x == 0 | is.na(.x)),
+      "Empty (All 0 or NA)",
+      "OSDS Permit Recorded"
+    )) %>% 
+  unite("class_history", starts_with("new"), sep = "|", remove = FALSE)
+
+# separate df to create a flag. you need the iws table 1 registry for this one
+
+table_1_new <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/oahu_tables/table1_tmk_registry_all.csv")) %>% 
+  mutate(tmk = as.character(tmk))
+
+update_logic_df <- table3_updated_classmatch %>% 
+  left_join(table_1_new, by = "tmk") %>% 
+  dplyr::select(tmk, encoded_sum, min_year, max_year, n_addresses, class_history,
+                starts_with("new")) %>% 
+  # change this logic: first define siutation in "new", ie one or two upgrades etc. then compare that to OSDS. 
+  # 
+  mutate(
+    legacy_val = as.numeric(encoded_sum),
+    v2009 = as.numeric(newclass2009),
+    v2010 = as.numeric(newclass2010),
+    
+    scenario_match_flag = case_when(
+      legacy_val == v2009 | legacy_val == v2010 ~ "matched 2009 or 2010",
+      is.na(v2009) & is.na(v2010) ~ "no data to compare",
+      TRUE ~ "unmatched"
+    )
+  )
+
+update_logic_refined_cl <- update_logic_df %>% 
+  mutate(newpre_2009 = case_when(
+    scenario_match_flag == "matched 2009 or 2010" ~ NA_real_,
+    scenario_match_flag %in% c("unmatched", "no data to compare") ~ legacy_val,
+    TRUE ~ NA_real_
+  )) %>% 
+  select(tmk, newpre_2009, newclass2009, newclass2010,
+         starts_with("newclass201"),starts_with("newclass202"), everything()) %>% 
+  # Use rowwise to build the unique story without the split/paste overhead
+  rowwise() %>%
+  mutate(unique_story = {
+    vals <- c_across(starts_with("new"))
+    vals <- vals[!is.na(vals) & vals != "" & vals != "NA"]
+    paste(unique(vals), collapse = "|")
+  }) %>%
+  ungroup() %>%
+  mutate(
+    upgrade_scenario = case_when(
+      # High-priority special overrides
+      unique_story == "9|1|8"  ~ "cesspool and septic - both repaired, no change",
+      unique_story == "10|2|9" ~ "cesspool and septic 2 - septic repaired twice, cesspool once",
+      unique_story == "7|9|1" ~ "potential data error: cesspool added, then possibly updated",
+      unique_story == "4|2" ~ "septic and aerobic - replacement of aerobic",
+      
+      unique_story == "3|4" ~ "septic combo to aerobic",
+      
+      unique_story == "1|4" ~ "single septic to aerobic",
+      
+      unique_story == "7|4" ~ "complex septic system to aerobic",
+      
+      unique_story == "8|5" ~ "cesspool to septic / aerobic hybrid",
+      
+      unique_story == "5|1" ~ "septic and aerobic to septic",
+      
+      unique_story == "7|3" ~ "2 septics and aerobic to just 2 septics - aerobic removal",
+      
+      unique_story == "7|1|4" ~ "2 septics and aerobic + one septic repair + one aerobic repair",
+      
+      unique_story == "10|9" ~ "1 septic + cesspool to better septic and cesspool",
+      
+      unique_story == "1|5" ~ "1 septic with a new aerobic installed",
+      
+      unique_story == "8|9" ~ "1 cesspool + one other type installed",
+      
+      
+      # Standard Logic
+      unique_story == "" | !str_detect(unique_story, "\\|") ~ "no upgrade detected",
+      str_detect(unique_story, "^8\\|.*[1234]$") ~ "single cesspool upgraded to septic or aerobic",
+      str_detect(unique_story, "^3\\|.*[12]$") ~ "multiple septic with new permit: possible repair",
+      str_detect(unique_story, "^[24]\\|.*1$") ~ "septic or aerobic system refined to cleanest type (Class 1)",
+      str_detect(unique_story, "^(9|1[0-5])\\|.*[1234]$") ~ "multiple osds with cesspool upgraded",
+      str_detect(unique_story, "^(9|1[0-5])\\|.*8$") ~ "multiple osds with new cesspool application",
+      
+      # Errors and Laterals
+      str_detect(unique_story, "^[1-7]\\|.*(8|9|1[0-5])$") ~ "potential data error: backslide to cesspool",
+      str_detect(unique_story, "^[123]\\|.*[123]$") ~ "lateral change (clean to clean)",
+      
+      TRUE ~ "other scenario"
+    )
+  )
+
+
+# split into data for table 3 and a flag for table 1
+table_3_new_updated <- update_logic_refined_cl %>% 
+  select(tmk, starts_with("new"))
+
+class_flag_forTable1 <- update_logic_refined_cl %>%
+    select(tmk,class_match_flag = scenario_match_flag,unique_story,upgrade_scenario)
+
+
+```
+
+
+#### Complete Tables 1 - 3a
+```{r complete-tables}
+
+# read in table 1 new and unchanged versions, and add gapfill flags
+
+table_1_new <- read.csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/oahu_tables/table1_tmk_registry_all.csv")) %>% 
+  rename(in_dwelldat = is_dwelling) %>% 
+  mutate(status_since_otp = "New Permit",
+         n_addresses = as.character(n_addresses),
+         tmk = as.character(tmk)) %>% 
+  #select(-full_taxid) %>% 
+  distinct()
+
+table_1_unchanged <- read.csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/oahu_tables/table1_tmk_registry_UNCHANGED.csv")) %>% 
+  mutate(scenario = "No new permits") %>% 
+  mutate(tmk = as.character(tmk)) %>% 
+  distinct()
+
+# are there duplicates? no
+
+table_1_unchangeddups <- table_1_unchanged %>% filter(tmk %in% table_1_new$tmk)
+
+table_1_complete <- bind_rows(table_1_new, table_1_unchanged)
+
+# ------------ Table 2 --------------------- #
+
+# this one should have all the tmks - commercial tmks 
+table_2_unchanged <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/oahu_tables/table2_classes_UNCHANGED.csv")) %>% 
+  mutate(tmk = as.character(tmk))
+
+table_2_updatedforbind <- table_2_updated %>% 
+  rename_with(~ str_replace(.x, "newbeds", "bedrooms_"), 
+              starts_with("newbeds"))
+
+table_2_new_only <- table_2_new %>% 
+  filter(tmk %!in% table_2_updatedforbind$tmk)
+
+table_2_complete <- bind_rows(table_2_unchanged, table_2_updatedforbind, table_2_new_only) %>% 
+  distinct()#2000 ish commerical?
+
+year_built <- oahu_dwell_alltmks %>% 
+  filter(tmk %in% table_2_complete$tmk) %>% 
+  select(tmk, year_built) %>%
+  filter(!is.na(year_built)) %>% 
+  distinct() %>% 
+  group_by(tmk) %>%
+  summarize(
+    # str_flatten to join them with a comma
+    year_built_combined = str_flatten(as.character(year_built), collapse = ", "),
+    #count how many years were found
+    count_buildyears = n()
+  ) %>%
+  ungroup() %>% 
+  mutate(tmk = as.character(tmk))
+
+
+table_2_flags <- table_2_complete %>% 
+  mutate(
+    bed_trend = case_when(
+      bedrooms_2010 < bedrooms_2020  ~ "Expansion since OTP",
+      bedrooms_2010 > bedrooms_2020  ~ "Shrink - double check",
+      bedrooms_2010 == bedrooms_2020 ~ "Perfect Match",
+      TRUE                          ~ NA_character_
+    ),
+  ) %>% 
+  left_join(year_built, by = "tmk") %>% 
+  select(tmk, bed_trend, year_built_combined, count_buildyears)
+
+table_1_complete_bedflags <- table_1_complete %>% 
+  mutate(gapfill_flag = "not gapfilled - no earlier info") %>% 
+  left_join(table_2_flags, by = "tmk")
+
+# -------------- Table 3 --------------------- #
+  
+table_3_unchanged <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/oahu_tables/table3_classes_UNCHANGED.csv")) %>% 
+  distinct() %>% 
+  mutate(tmk = as.character(tmk)) %>% 
+  rename(newclass2010 = osds_cl_2010)
+
+table_3_updatedforbind <- table_3_new_updated %>% 
+  mutate(tmk = as.character(tmk))
+
+table_3_newonly <- table_3_new %>% 
+  filter(tmk %!in% table_3_updatedforbind$tmk) %>% 
+  distinct()
+
+table_3_complete <- bind_rows(table_3_new_updated, table_3_unchanged, table_3_newonly) %>%   rename_with(~ str_replace(.x, "newclass", "osds_class_"), 
+              starts_with("newclass")) 
+
+table_1_withClassflags <- table_1_complete_bedflags %>% 
+  left_join(class_flag_forTable1, by = "tmk")
+
+
+# ------------ Table 4 --------------------- # 
+
+table_4_unchanged <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/oahu_tables/table4_commercial_UNCHANGED_draft.csv")) %>% 
+  mutate(tmk = as.character(tmk)) %>% 
+  select(tmk, x,y)
+
+table_4_googleplaces <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/kauai_tables/table4_googleplaces_UNCHANGED_draft.csv")) %>% 
+  mutate(
+    tmk = as.character(tmk),
+    commercial = "unknown",
+    pitt_code = -9999) %>% 
+  select(tmk, commercial,pitt_code)
+  
+table_4_withUpdates_forbind <- table4_withUpdates %>% 
+  select(tmk,x,y)
+  
+table_4_new <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/oahu_tables/table1_tmk_registry_commercial.csv")) %>% 
+  mutate(tmk = as.character(tmk)) %>% 
+  filter(tmk %!in% table_4_withUpdates_forbind$tmk)
+  
+
+table_4_complete <- bind_rows(table_4_unchanged,
+                              table_4_new,
+                              table_4_withUpdates_forbind)
+
+
+
+# ----------- Clean up Table 1 ---------------- #
+
+table_1_final <- table_1_withClassflags %>% 
+  mutate(
+    use_table4 = ifelse(tmk %in% table_4_complete$tmk, TRUE,FALSE)
+  ) %>% 
+  mutate(bed_trend = "not able to discern bed trend") %>% 
+  select(
+    tmk,
+    starts_with("n_"),
+    in_dwelldat,
+    status_since_otp,
+    n_buildings,
+    bed_trend,
+    year_built_combined,
+    bed_gapfill_flag = gapfill_flag,
+    permit_story = unique_story, 
+    upgrade_scenario,
+    use_table_4 = use_table4
+  )
+
+# ----------- Tmk checks ----------------- #
+
+# tmk checks
+# All TMKs in table 1 accounted for table 3? 
+
+all(table_1_final$tmk %in% table_3_complete$tmk)
+
+# All TMKS in table 2 in table 1?
+all(table_2_complete$tmk %in% table_1_final$tmk)
+
+# Authoritative list all in table 1?
+
+all(master_tmk_list %in% table_1_final$tmk) # only missing 1, and its 0
+
+shouldbe_intable1 <- setdiff(master_tmk_list, table_1_final$tmk)
+
+# Difference in table 2 and table 1 == table 4?
+
+shouldbein_table_4 <- setdiff(table_1_final$tmk,table_2_complete$tmk) #2710
+
+shouldbe_intable2 <- setdiff(shouldbein_table_4,table_4_complete$tmk) # 0
+
+head(shouldbe_intable2)
+
+all(shouldbe_intable2 %in% table_2_complete$tmk) #TRUE
+
+table_4_complete_cl <- table_4_complete %>% 
+  filter(tmk %!in% shouldbe_intable2)
+
+
+# update use table 4 flag
+table_1_final_final <- table_1_final %>%
+  mutate(
+    use_table4 = ifelse(tmk %in% table_4_complete_cl$tmk, TRUE,FALSE)
+  )
+
+# Save all! 
+
+
+write_csv(table_1_final_final,
+          file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/oahu_tables/table1_tmk_registry_ALL.csv"))
+
+write_csv(table_2_complete,
+          file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/oahu_tables/table2_bedrooms_ALL.csv"))
+
+write_csv(table_3_complete,
+          file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/oahu_tables/table3a_permitsApplied_ALL.csv"))
+
+write_csv(table_4_complete_cl,
+          file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/oahu_tables/table4_percommercial_draft.csv"))
+
+
+```
+
+## Step 4: Create table 3b
+
+The additive encoding is what is known as a binary bit mask. Each class represents a power of 2, so every unique sum corresponds to exactly one combination of classes. 
+
+We can think of table 3a as an "event" table, since it records the permit application event. However, we want to create a "status" table, which records the actual OSDS present on the property in each year, BASED on the events we know happened. This will be table 3b
+
+We can make multiple versions of this, using different math. In the first, I'll assume that:
+1. If there was only one OSDS on the property, the new application is replacing it
+2. If there were multiple OSDS on the property, the new application is replacing the grossest, ie highest class. This correspond to the largest power of 2 within the encoded value
+
+This translates to the following math: 
+1. Identify the largest power of 2 inside the current value.
+2. Subtract that power of 2.
+3. Add the new application value.
+
+```{r}
+
+# ------------------- Helper functions ------------------- #
+
+# 1. Create a function for the logic
+calculate_active_permits <- function(apps) {
+  active_status <- numeric(length(apps))
+  
+  # Helper to find highest power of 2
+  get_highest <- function(x) if (x == 0) 0 else 2^floor(log2(x))
+  
+  running_total <- apps[1]
+  active_status[1] <- running_total
+  
+  for (i in 2:length(apps)) {
+    # only trigger replacement if there is an application (>0)
+    # If a new application value appears (it's an "event" year)
+    #if (apps[i] != apps[i-1] & apps[i] != 0) 
+    if(apps[i] >0){
+      highest <- get_highest(running_total)
+      # Remove highest bit, then Bitwise OR the new application
+      running_total <- bitwOr(bitwAnd(running_total, bitwNot(highest)), apps[i])
+    }
+    active_status[i] <- running_total
+  }
+  return(active_status)
+}
+
+table_3a_long <- table_3_complete %>% 
+  rename(osds_cl_2008 = newpre_2009) %>% # note, this is a stand in for "pre 2009"
+  pivot_longer(cols = -tmk, names_to = "Year", values_to = "Applied") %>% 
+  mutate(Applied = replace_na(Applied,0))
+  
+table_3b_long <- table_3a_long %>% 
+  arrange(tmk,Year) %>% 
+  group_by(tmk) %>% 
+  mutate(active_status = calculate_active_permits(Applied)) %>% 
+  ungroup()
+  
+table_3b_wide <- table_3b_long %>% 
+  pivot_wider(id_cols = tmk, names_from = Year,values_from = active_status)
+
+write_csv(table_3b_wide,
+          file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/oahu_tables/table3b_allyears_draft.csv"))
+
+
+
+```

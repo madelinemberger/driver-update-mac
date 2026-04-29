@@ -738,20 +738,20 @@ year_built <- kauai_dwell_alltmks %>%
 
 # get year built, and add on to the flags
 
-year_built <- maui_dwell_alltmks %>% 
-  filter(tmk %in% maui_otp_updaed_withBedFlags$tmk) %>% 
-  select(tmk, year_built) %>%
-  filter(!is.na(year_built)) %>% 
-  distinct() %>% 
-  group_by(tmk) %>%
-  summarize(
-    # str_flatten to join them with a comma
-    year_built_combined = str_flatten(as.character(year_built), collapse = ", "),
-    #count how many years were found
-    count_buildyears = n()
-  ) %>%
-  ungroup() %>% 
-  mutate(tmk = as.character(tmk)) # missing 20 
+# year_built <- maui_dwell_alltmks %>% 
+#   filter(tmk %in% maui_otp_updaed_withBedFlags$tmk) %>% 
+#   select(tmk, year_built) %>%
+#   filter(!is.na(year_built)) %>% 
+#   distinct() %>% 
+#   group_by(tmk) %>%
+#   summarize(
+#     # str_flatten to join them with a comma
+#     year_built_combined = str_flatten(as.character(year_built), collapse = ", "),
+#     #count how many years were found
+#     count_buildyears = n()
+#   ) %>%
+#   ungroup() %>% 
+#   mutate(tmk = as.character(tmk)) # missing 20 
 
 kauai_updated_with_BEDflags_gapfilled <- kauai_updated_withBedFlags %>% 
   left_join(., year_built, by = "tmk") %>%
