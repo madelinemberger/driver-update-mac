@@ -1,0 +1,204 @@
+---
+title: "Spatialize TMKs"
+author: "Madeline Berger"
+date: "2026-04-30"
+output: html_document
+---
+
+# Spatialize all tmks
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(here)
+
+source(here("workflow/setup.R"))
+
+```
+
+
+This script will read in our tmk registry from every island, combine them all, and then add spatial information including:
+- TMK polygon
+- TMK centroid
+- Flow line - closes to TMK centroid 
+- Flow lines(s) - all that intersect with tmk polygon
+
+
+We'll also pull the old spatial information, for the points that had them, and include that to compare to cetroids. 
+
+
+## Data Prep
+### Read in and combine Table 1 from all Islands
+
+```{r}
+
+kauai <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/kauai_tables/table1_tmk_registry_ALL.csv")) %>% 
+  select(-use_table4) %>% 
+  mutate(county = "Kauai")
+maui_nui <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/maui_tables/table1_tmk_registry_ALL.csv")) %>% 
+  select(-use_table4) %>% 
+  mutate(county = "Maui Nui")
+oahu <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/oahu_tables/table1_tmk_registry_ALL.csv")) %>% 
+  select(-use_table4) %>% 
+  mutate(county = "Honolulu")
+hawaii <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/hi_tables/table1_tmk_registry_ALL_draft.csv")) %>% 
+  rename(permit_story= unique_story ,
+         bed_gapfill_flag = bedroom_data_source) %>% 
+  select(-min_year,-max_year,-class_match_flag,-scenario,-pitt_assignment) %>% 
+  mutate(n_buildings = "temp until fill",
+         year_built_combined = "temp until fill",
+         use_table_4 = "temp until fill",
+         county = "Hawaii")
+
+setdiff(colnames(maui_nui), colnames(hawaii))
+
+# complete tmk registry 
+
+all_osds_tmks <- rbind(kauai,
+                       maui_nui,
+                       oahu,
+                       hawaii) %>% 
+  mutate(tmk = as.character(tmk))
+
+
+# save draft
+write_csv(all_osds_tmks,
+          file.path(driver_dir,"4_OSDS_N_Runoff/output-data/final_tables/table1_tmk_registry_ALL.csv"))
+
+```
+
+
+### Read in NEW spatial information 
+
+```{r}
+# tmk - this will be the first join
+tmk_parcels <- st_read(file.path(data_dir,"osds/raw-data-downloaded/tmk_state_parcels_shp/tmk_state.shp"))
+
+crs(tmk_parcels)
+
+
+# read in watersheds - spatial join 
+
+watersheds_shp <- st_read(file.path(data_dir,"Coastlines_Watersheds/WBD_HU12_n83utm4_2023fixed.shp")) %>% 
+  select(HUC12,Name)
+
+crs(watersheds_shp)
+
+
+# flow lines 
+flowlines <- st_read(file.path(driver_dir,"0_Input_Data_and_Models/Common_2024/Finalized/Coastlines_Watersheds/NHD_Flowlines/NHD_Flowlines.shp"))
+
+```
+
+
+
+### Read in OLD files for each island, isolate spatial info if available
+These would all come from old otp data available. 
+
+```{r}
+# oahu 
+otp_oahu_raw <- st_read(file.path(driver_dir,"4_OSDS_N_Runoff/large-input-data/OSDS_HIGIS_2010/osds_oah.shp")) %>% 
+  clean_names() %>% 
+  mutate(tmk = as.character(tmk_9))
+
+
+```
+
+
+
+## Analysis 
+
+```{r}
+
+sf_use_s2(FALSE)
+
+### Step 1: Get TMKS centroid and join to table 1
+
+tmk_osds <- tmk_parcels %>% 
+  filter(TMK_txt %in% all_osds_tmks$tmk) %>% 
+  mutate(is_valid = st_is_valid(geometry)) %>% 
+  st_cast("MULTILINESTRING") %>%   # fix invalid non closures
+  st_cast("LINESTRING") %>%        
+  st_polygonize()
+
+tmk_centroids <- st_centroid(tmk_osds)
+tmk_pos <- st_point_on_surface(tmk_osds)
+
+# Look at difference for which one to choose
+
+kauai_centroids <- tmk_centroids %>% filter(county == "Kauai")
+kauai_pos <- tmk_pos %>% filter(county == "Kauai")
+
+mapview(kauai_centroids, col.regions = "blue")+
+  mapview(kauai_pos, col.regions = "lightblue")
+
+
+tmk_unique_points <- tmk_pos %>%
+  # Select the ID and ensure we only have one row per ID
+  distinct(TMK_txt, .keep_all = TRUE) %>%
+  select(tmk = TMK_txt)
+
+tmk_unique_centroids <- tmk_centroids %>%
+  # Select the ID and ensure we only have one row per ID
+  distinct(TMK_txt, .keep_all = TRUE) %>%
+  select(tmk = TMK_txt)
+
+tmk_pos_join <- all_osds_tmks %>%
+  left_join(tmk_unique_points, by = "tmk")
+
+
+missing_tmks <- all_osds_tmks %>%
+  anti_join(tmk_unique_points, by = "tmk")
+
+nrow(missing_tmks)
+head(missing_tmks)
+
+osds_with_tmkpos_cl <- tmk_pos_join %>% 
+  filter(tmk %!in% missing_tmks$tmk) %>% 
+  st_as_sf() %>% 
+  st_transform(crs = crs(watersheds_shp)) # 895 dont have a tmk point
+
+### Step 2: Spatial join to watersheds
+
+osds_with_watersheds <- st_join(osds_with_tmkpos_cl, watersheds_shp, join = st_intersects)
+
+
+outside_count <- sum(is.na(osds_with_watersheds$Name)) # Change to your column name
+print(paste("Points with no watershed match:", outside_count))
+
+insiders <- osds_with_watersheds %>% filter(!is.na(Name))
+outsiders <- osds_with_watersheds %>% filter(is.na(Name))
+
+nearest_indices <- st_nearest_feature(outsiders, watersheds_shp)
+
+dist <- st_distance(outsiders, watersheds_shp[nearest_indices, ], by_element = TRUE)
+
+
+outsiders_fixed <- outsiders %>%
+  select(-colnames(st_drop_geometry(watersheds_shp))) %>% 
+  bind_cols(st_drop_geometry(watersheds_shp[nearest_indices, ]))
+
+
+mapview(outsiders)
+
+osds_final_watersheds <- bind_rows(insiders, outsiders_fixed) # 13 donʻt have a watershed
+
+outside_count2 <- sum(is.na(osds_final_watersheds$Name))
+
+outsiders2 <- osds_final_watersheds %>% filter(is.na(Name))
+mapview(outsiders2)
+
+
+st_write(osds_final_watersheds,
+         dsn = file.path(driver_dir,"4_OSDS_N_Runoff/output-data/final_tables/table1_tmk_registry_withSpatial.csv"))
+
+write_csv(missing_tmks,file.path(driver_dir,"4_OSDS_N_Runoff/output-data/final_tables/table1_tmk_registry_withOUTSpatial.csv"))
+
+
+### Last Step: Flow Lines. These donʻt have years? Question for Kim
+
+```
+
+
+
