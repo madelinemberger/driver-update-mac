@@ -1,0 +1,32 @@
+---
+title: "Gapfill OSDS with No Dwelling information"
+author: "Madeline Berger"
+date: "2026-05-01"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+# Gapfilling OSDS missing dwell data 
+
+### How many are we missing information for, across islands?
+
+```{r}
+
+
+
+
+
+```
+
+### Which do we have spatail (x,y) info for? Which to we have address info for?
+
+
+### First pass: Open Street Maps
+
+
+
+### Second pass: Google Places
