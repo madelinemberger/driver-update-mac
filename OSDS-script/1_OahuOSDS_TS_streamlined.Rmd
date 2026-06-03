@@ -1215,8 +1215,6 @@ write_csv(table_3b_wide,
 ```{r}
 
 
-
-
 # read in non-dwell data
 
 oahu_table4 <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/oahu_tables/table4_percommercial_draft.csv"))
@@ -1262,6 +1260,20 @@ api_ready_address <- addresses_fortbl4 %>%
   select(tmk, address_full)
 
 
+## Alternative information to search with: TMK parcel centroids
+
+table1_withspatial <- st_read(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/final_tables/table1_tmk_registry_withSpatial.shp"))
+
+tmk_for_api <- table1_withspatial %>% 
+  st_transform(crs = 4326) %>% 
+  mutate(
+    lat = st_coordinates(.)[,2],
+    lon = st_coordinates(.)[,1]
+  ) %>%
+  st_drop_geometry() %>%
+  select(tmk, lat, lon) %>% 
+  filter(tmk %in% addresses_fortbl4$tmk)
+
 
 ```
 
@@ -1298,7 +1310,7 @@ library(dplyr)
 
 # --- PART A: SEARCH BY ADDRESS ---
 # try one from address dataframe
-addr_example <- "51-296 kamehameha highway, kaaawa, 96730"
+addr_example <- "66-1009 kaukona hua road, waialua"
 
 res_addr <- google_find_place(
   input = addr_example,
@@ -1307,7 +1319,7 @@ res_addr <- google_find_place(
   fields = c("formatted_address", "name", "type")
 )
 
-addr_types <- res_addr$candidates$types[[2]]
+addr_types <- res_addr$candidates$types[[1]]
 print(paste("Address is a:", paste(addr_types, collapse = ", ")))
 
 # set up saftey limit
@@ -1357,6 +1369,12 @@ get_detailed_address_info <- function(addr_string) {
 # 3. The Radius Sweep (Same as before, using the extracted coordinates)
 radius_sweep <- function(lat, lon) {
   if (is.na(lat)) return(NA)
+  
+  # Saftey stop for bank account
+  api_count <- api_count + 1
+  if (api_count > safety_limit){
+    stop("Saftey limit reached during radius sweep")
+  }
   
   res <- google_places(location = c(lat, lon), radius = 100, key = key)
   

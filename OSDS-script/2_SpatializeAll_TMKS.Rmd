@@ -71,7 +71,7 @@ write_csv(all_osds_tmks,
 
 ### Read in NEW spatial information 
 
-```{r}
+```{r, message = FALSE}
 # tmk - this will be the first join
 tmk_parcels <- st_read(file.path(data_dir,"osds/raw-data-downloaded/tmk_state_parcels_shp/tmk_state.shp"))
 
@@ -87,7 +87,7 @@ crs(watersheds_shp)
 
 
 # flow lines 
-flowlines <- st_read(file.path(driver_dir,"0_Input_Data_and_Models/Common_2024/Finalized/Coastlines_Watersheds/NHD_Flowlines/NHD_Flowlines.shp"))
+# flowlines <- st_read(file.path(driver_dir,"0_Input_Data_and_Models/Common_2024/Finalized/Coastlines_Watersheds/NHD_Flowlines/NHD_Flowlines.shp"))
 
 ```
 
@@ -118,7 +118,7 @@ hawaii_raw <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/large-input-data/OS
 
 library(purrr)
 
-# 1. Put your dataframes into a named list
+# 1. dataframes into a named list
 df_list <- list(
   molo_raw, 
   maui_raw,
@@ -126,8 +126,8 @@ df_list <- list(
   hawaii_raw
 )
 
-# 2. Use map to convert all of them at once
-# We assume WGS84 (4326) - change the crs if yours is different!
+# 2. use map to convert all of them at once
+
 sf_list <- df_list %>%
   map(~{
     .x %>%
@@ -140,7 +140,7 @@ sf_list <- df_list %>%
 
 mauinui_hi_kau_spatial <- do.call(rbind,sf_list)
 
-otp_oahu_spatial <- st_transform(otp_oahu_spatial, crs = 32604)
+otp_oahu_spatial <- st_transform(otp_oahu_raw, crs = 32604)
 
 crs(mauinui_hi_kau_spatial) == crs(otp_oahu_spatial)
 
@@ -148,8 +148,7 @@ crs(mauinui_hi_kau_spatial) == crs(otp_oahu_spatial)
 ```
 
 
-
-## TMK POS
+## TMK - point on surface
 
 ```{r}
 
@@ -212,7 +211,7 @@ missing_spatial_info <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-da
     mutate(tmk = as.character(tmk))
 
 
-otp_oahu_spatial <- filter(otp_oahu_spatial, tmk %in% missing_spatial_info$tmk) %>% 
+otp_oahu_spatial <- filter(otp_oahu_raw, tmk %in% missing_spatial_info$tmk) %>% 
   select(tmk,x,y)
 
 otp_oahu_spatial <- st_transform(otp_oahu_spatial, crs = 32604)
@@ -233,7 +232,7 @@ missing_info_gapfilled <- missing_spatial_info %>%
   left_join(., all_for_gapfill, by = "tmk") %>% 
   st_as_sf() %>% 
   st_transform(crs = crs(osds_with_tmkpos_cl)) %>% 
-  select(-x,-y)
+  select(-x,-y, -HUC12,-Name)
 
 
 # add back to the rest
@@ -253,12 +252,13 @@ osds_spatial_gapfill1 <- rbind(osds_with_tmkpos_cl,
 osds_with_watersheds <- st_join(osds_spatial_gapfill1, watersheds_shp, join = st_intersects)
 
 
-outside_count <- sum(is.na(osds_with_watersheds$Name)) # Change to your column name
+outside_count <- sum(is.na(osds_with_watersheds$Name)) # Name is watershed name
 print(paste("Points with no watershed match:", outside_count))
 
 insiders <- osds_with_watersheds %>% filter(!is.na(Name))
 outsiders <- osds_with_watersheds %>% filter(is.na(Name))
 
+# outsiders are mainly coastal. Add to nearest watershed. 
 nearest_indices <- st_nearest_feature(outsiders, watersheds_shp)
 
 dist <- st_distance(outsiders, watersheds_shp[nearest_indices, ], by_element = TRUE)
@@ -276,13 +276,13 @@ osds_final_watersheds <- bind_rows(insiders, outsiders_fixed) #
 outside_count2 <- sum(is.na(osds_final_watersheds$Name))
 
 outsiders2 <- osds_final_watersheds %>% filter(is.na(Name))
-mapview(outsiders2) # 56 left 
+mapview(outsiders2) # 57 left 
 
 still_missing <- osds_final_watersheds %>% 
   filter(is.na(Name))
 
 st_write(osds_final_watersheds,
-         dsn = file.path(driver_dir,"4_OSDS_N_Runoff/output-data/final_tables/table1_tmk_registry_withSpatial.csv"),
+         dsn = file.path(driver_dir,"4_OSDS_N_Runoff/output-data/final_tables/table1_tmk_registry_withSpatial.shp"),
          delete_dsn = T)
 
 st_write(still_missing,
@@ -290,10 +290,10 @@ st_write(still_missing,
          delete_dsn = T)
 
 
-### Last Step: Flow Lines. These donʻt have years? Question for Kim
+### Last Step: Flow Lines. These donʻt have years? Question for Kim and Joey 
 
 ```
 
 
-##Add Flowlines?
+## Add Flowlines?
 

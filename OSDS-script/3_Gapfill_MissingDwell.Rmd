@@ -7,6 +7,26 @@ output: html_document
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
+
+library(here)
+library(janitor)
+source(here("workflow/setup.R"))
+
+# Read in necessary data
+
+iws_permit_data <- read_csv(file.path(data_dir, "osds/shared-data/2009_Present_IWSList_Permits.csv"))
+
+iws_oahu_permits <- iws_permit_data %>% 
+  mutate(tmk_char = as.character(TMK)) %>% 
+  filter(str_starts(tmk_char,"1")) %>% 
+  rename(full_taxid = tmk_char) %>% # this is where fulltax id is created
+    rowid_to_column("permit_id") %>% 
+  mutate(approval_date = mdy(FinalApprovalDate),
+         year = year(approval_date)) %>% 
+  clean_names()
+
+iws_oahu_permits_tmk <- iws_oahu_permits %>% pull(tmk)
+
 ```
 
 
@@ -16,17 +36,476 @@ knitr::opts_chunk$set(echo = TRUE)
 
 ```{r}
 
+# ------------------------ Read in Table 4s for each Island - missing Dwell Data ------------------ #
 
+# read in table 4 from oahu - this one has x y info
+
+oahu_table4 <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/oahu_tables/table4_percommercial_draft.csv"))
+
+coords_fortbl4 <- oahu_table4 %>% 
+  select(tmk, x,y) %>% 
+  filter(!is.na(x) & !is.na(y)) %>% 
+  st_as_sf(coords = c("x","y"), crs = 32604)
+
+coordinates_latlon <- st_transform(coords_fortbl4, crs = 4326) #2633
+
+mapview(coordinates_latlon)
+
+api_ready_coords_oah <- coordinates_latlon %>%
+  mutate(
+    lat = st_coordinates(.)[,2],
+    lon = st_coordinates(.)[,1],
+    google_coords = paste(lat, lon, sep = ",")
+  ) %>%
+  st_drop_geometry()
+
+
+# get addresses - if there are coordinates, then use these rather than address because it will be more precise.
+
+addresses_fortbl4 <- iws_oahu_permits %>% 
+  filter(tmk %in% oahu_table4$tmk) %>% 
+  filter(tmk %!in% api_ready_coords_oah$tmk) %>% 
+  select(tmk, starts_with("project")) %>% 
+  mutate(street_house = if_else(is.na(project_street_address2), 
+                           project_street_address, 
+                           paste(project_street_address, "-", project_street_address2)),
+         # Create the full address with a conditional check for the zip code
+    address_full = if_else(is.na(project_zip_code) | project_zip_code == "NA",
+                           paste(street_house, project_city, sep = ", "),
+                           paste(street_house, project_city, project_zip_code, sep = ", ")),
+    
+    # Final step: convert everything to lower case
+    address_full = str_to_lower(address_full)
+    )
+
+
+api_ready_address_oah <- addresses_fortbl4 %>%
+  select(tmk, address_full)
+
+
+# --------------------- Kauai Maui ------------------------------ #
+
+# these do NOT have xy data. So weʻll use the TMK centroids below 
+
+mauinui_table4 <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/maui_tables/table4_percommercial_draft.csv")) %>% 
+  filter(commercial == "check google places")
+
+kauai_table4 <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/kauai_tables/table4_percommercial_draft.csv")) %>% filter(commercial == "check google places")
+
+hi_table4 <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/hi_tables/table4_updated_draft.csv")) %>% 
+  filter(data_presence == "Empty (All 0 or NA)")
+
+
+kauai_maui_table4 <- bind_rows(mauinui_table4, kauai_table4) # 471
+
+
+# --------------------- Read in Spatialized Table 1  ------------------------- #
+
+## Alternative information to search with: TMK parcel centroids
+
+table1_withspatial <- st_read(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/final_tables/table1_tmk_registry_withSpatial.shp"))
+
+tmk_for_api_kauaimaui <- table1_withspatial %>% 
+  st_transform(crs = 4326) %>% 
+  mutate(
+    lat = st_coordinates(.)[,2],
+    lon = st_coordinates(.)[,1]
+  ) %>%
+  #st_drop_geometry() %>%
+  select(tmk, lat, lon) %>% 
+  filter(tmk %in% kauai_maui_table4$tmk) #459 (we lost 12)
+
+tmk_for_api_oah <- table1_withspatial %>% 
+  st_transform(crs = 4326) %>% 
+  mutate(
+    lat = st_coordinates(.)[,2],
+    lon = st_coordinates(.)[,1]
+  ) %>%
+  #st_drop_geometry() %>%
+  select(tmk, lat, lon) %>% 
+  filter(tmk %in% oahu_table4$tmk) # 2218 (note we lost about 400, so these did not have dwell or tmk info?)
+
+```
+
+### First pass: Additional GIS Data for Flags
+
+For this, weʻll use the TMKS.
+
+Key info to help estimate effluent: 
+
+"Hawaii’s public school system (which operates as a single statewide district) has an average school size of about 560 students. Statewide, there are roughly 295 public schools educating a total of about 165,000 students"
+
+"teacher student ratio = 14:1"
+
+```{r}
+
+# read in additional layers 
+state_landuse <- st_read(file.path(driver_dir,"4_OSDS_N_Runoff/large-input-data/Additional_Data_for_ID/State_Land_Use_Districts.geojson"))
+
+public_schools <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/large-input-data/Additional_Data_for_ID/Public_Schools.csv")) %>%
+  st_as_sf(coords = c("X","Y"), crs = 32604) %>% 
+  mutate(
+    enrollment = 560,
+    faculty = 40,
+    tuition = 0
+  ) %>% 
+  select(
+    school_name = esis_name,
+    address,
+    city,
+    zip,
+    district,
+    sch_type,
+    complex_area,
+    enrollment,
+    faculty,
+    tuition
+  )
+
+private_schools <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/large-input-data/Additional_Data_for_ID/Private_Schools.csv")) %>% 
+  st_as_sf(coords = c("X","Y"), crs = 32604) %>% 
+  mutate(
+    sch_type = "private",
+    complex_area = "unknown",
+    district = "to add"
+  ) %>% 
+  select(
+    school_name = school,
+    address,
+    city,
+    zip = zipcode,
+    district,
+    sch_type,
+    complex_area,
+    enrollment = enrollment21,
+    faculty = faculty21,
+    tuition = tuition21
+  )
+
+all_schools <- rbind(public_schools, private_schools)
+
+
+# Pre-screening: Landuse code
+
+landuse_km <- st_join(tmk_for_api_kauaimaui, state_landuse, join = st_intersects)
+
+landuse_oah <- st_join(tmk_for_api_oah, state_landuse, join = st_intersects)
+
+landuse_km_missing <- landuse_km %>% 
+  filter(is.na(ludcode)) # these donʻt have spatial info, 17
+
+landuse_oah_missing <- landuse_oah %>% 
+  filter(is.na(ludcode)) # 40 
+
+# which are NA?
+
+mapview(landuse_oah_missing) # in the ocean
+
+# Schools 
+
+mapview(public_schools)+
+  mapview(private_schools)+
+  mapview(tmk_for_api_kauaimaui, col.regions = "red")
+
+
+# Manual Inspection Dataframe
+
+# here I actually looked at the map and confirmed ones that are schools, and a few other non-residences. We can use
+# this to compare how well the spatial join works, as well 
+
+manual_school_df <- data.frame(
+  FID = c(
+    427,
+    428,
+          285,
+          35,
+          36,
+          29,
+          17,
+          4,
+          87,
+          54,
+          53,
+          52),
+  School = c(
+    "Molokai Middle School",
+    "Molokai Middle School",
+    "Seabury Hall",
+    "Kauai High School",
+    "Kauai Community College",
+    "Koloa Elem School",
+    "Kalaheo Elem School",
+    "Kekaha Elem School",
+    "Ke Kula Niihau O Kekaha-LPCS",
+    "St. Catherine School",
+    "St. Catherine School",
+    "St. Catherine School"
+  )
+)
+
+manual_other_df <- data.frame(
+  FID = c(
+    213,
+    186,
+    179,
+    86,
+    10,
+    5,
+    6
+  ),
+  Place = c(
+    "Post office",
+    "Post office",
+    "Pot office",
+    "Healthy Hut Natural Foods",
+    "West Inn Hotel",
+    "LDS Church",
+    "Church"
+  )
+)
+
+# join the school info to the osds points. then join with HI GIS school to get enrollment numbers
+
+km_pts_with_fid <- tmk_for_api_kauaimaui %>% 
+  mutate(FID = row_number()) %>% 
+  left_join(manual_school_df, by = "FID") %>% 
+  left_join(manual_other_df, by = "FID")
+
+# check to make sure FID aligns
+mapview(km_pts_with_fid)+
+  mapview(tmk_for_api_kauaimaui, col.regions = "red")
+
+# create matrix
+
+within_200m_matrix <- st_is_within_distance(km_pts_with_fid, all_schools, dist = 200, sparse = FALSE)
+validation_set <- km_pts_with_fid %>%
+  mutate(
+    buffer_flagged_200m = rowSums(within_200m_matrix) > 0
+  )
 
 
 
 ```
 
-### Which do we have spatail (x,y) info for? Which to we have address info for?
-
-
-### First pass: Open Street Maps
-
 
 
 ### Second pass: Google Places
+
+Activate Google Places API
+
+```{r}
+
+# See if we have the key
+
+# Load the key from the local file
+source(here("config.txt"))
+
+# Set it as an environment variable so packages can find it
+Sys.setenv(GOOGLE_PLACES_KEY = GOOGLE_PLACES_KEY)
+
+# Verify (should print your key)
+print(Sys.getenv("GOOGLE_PLACES_KEY"))
+
+
+# Verify it immediately
+if(Sys.getenv("GOOGLE_PLACES_KEY") == "") {
+  stop("API Key is missing!")
+} else {
+  print("Success! Key is loaded.")
+}
+
+key <- Sys.getenv("GOOGLE_PLACES_KEY")
+
+# Load packages
+library(googleway)
+library(dplyr)
+
+
+# --- PART A: SEARCH BY ADDRESS ---
+# try one from address dataframe
+addr_example <- "66-1009 kaukona hua road, waialua"
+
+res_addr <- google_find_place(
+  input = addr_example,
+  key = key,
+  inputtype = "textquery",
+  fields = c("formatted_address", "name", "type")
+)
+
+addr_types <- res_addr$candidates$types[[1]]
+print(paste("Address is a:", paste(addr_types, collapse = ", ")))
+
+# set up saftey limit
+
+# 1. Initialize the counter at the very top
+api_count <- 0
+safety_limit <- 200
+
+# 2. Logic for Address Search + Coordinate Extraction
+get_detailed_address_info <- function(addr_string) {
+  # Safety count
+  # Access the counter from the global environment
+  api_count <<- api_count + 1 
+  
+  # THE TOLL BOOTH: Check the limit BEFORE calling Google
+  if (api_count > safety_limit) {
+    stop(paste("Safety limit of", safety_limit, "reached. Stopping to save your bank account!"))
+  }
+  
+  # We ask for 'geometry' so we get the lat/lon even if the type is boring
+  res <- google_find_place(
+    input = addr_string, 
+    key = key,
+    inputtype = "textquery", 
+    fields = c("name", "type", "geometry")
+  )
+  
+  if (length(res$candidates) > 0) {
+    top_cand <- res$candidates
+    main_type <- top_cand$types[[1]][1]
+    coords <- top_cand$geometry$location
+    
+    # Check if we need to dig deeper
+    needs_sweep <- main_type %in% boring_types
+    
+    return(list(
+      name = top_cand$name[1], 
+      type = main_type, 
+      lat = coords$lat[1], 
+      lon = coords$lng[1], 
+      sweep = needs_sweep
+    ))
+  }
+  return(list(name = NA, type = NA, lat = NA, lon = NA, sweep = FALSE))
+}
+
+# 3. The Radius Sweep (Same as before, using the extracted coordinates)
+radius_sweep <- function(lat, lon) {
+  if (is.na(lat)) return(NA)
+  
+  # Saftey stop for bank account
+  api_count <- api_count + 1
+  if (api_count > safety_limit){
+    stop("Saftey limit reached during radius sweep")
+  }
+  
+  res <- google_places(location = c(lat, lon), radius = 100, key = key)
+  
+  if (nrow(res$results) > 0) {
+    # Look for the first thing that ISN'T boring
+    interesting_finds <- res$results %>%
+      unnest(cols = c(types)) %>%
+      filter(!types %in% boring_types)
+    
+    if (nrow(interesting_finds) > 0) {
+      return(paste0("Part of: ", interesting_finds$name[1], " (", interesting_finds$types[1], ")"))
+    }
+  }
+  return("No larger landmark found")
+}
+
+# 4. Execute on address df
+
+results_addresses <- addresses_fortbl4 %>%
+  head(5) %>% # Test batch
+  rowwise() %>%
+  mutate(
+    # Step 1: Initial Address Lookup
+    init = list(get_detailed_address_info(address_full)),
+    found_name = init$name,
+    found_type = init$type,
+    temp_lat = init$lat,
+    temp_lon = init$lon,
+    needs_sweep = init$sweep
+  )
+
+results_sweep <- results_addresses %>% 
+  mutate(
+    # Step 2: If address was 'premise', look around that coordinate
+    final_insight = if_else(needs_sweep, 
+                            radius_sweep(temp_lat, temp_lon), 
+                            found_type)
+  ) %>%
+  select(-init) # Clean up the list column
+
+
+# --------------- PART B: Search by Coordinates ----------------------
+# Workflow: 1) if it has a specific place, get it. if it doesn't flag for radius search
+
+boring_types <- c("premise", "establishment", "point_of_interest", "political", "floor", "locality")
+
+# 2. Logic for Step 1: Specific Check
+get_initial_info_coords <- function(lat, lon) {
+  # Safety count
+  api_count <<- api_count + 1 
+  
+  # THE TOLL BOOTH: Check the limit BEFORE calling Google
+  if (api_count > safety_limit) {
+    stop(paste("Safety limit of", safety_limit, "reached. Stopping to save your bank account!"))
+  }
+  # Perform the search
+  res <- google_places(location = c(lat, lon), radius = 10, key = key)
+  
+  # Check if 'results' exists and has rows safely
+  if (!is.null(res$results) && length(res$results) > 0 && nrow(res$results) > 0) {
+    top_place <- res$results[1, ]
+    
+    # Safely extract the first type
+    main_type <- if (!is.null(top_place$types[[1]])) top_place$types[[1]][1] else "unknown"
+    
+    # Check if we need a radius sweep (boring_types defined earlier)
+    needs_sweep <- main_type %in% boring_types
+    
+    return(list(name = top_place$name, type = main_type, sweep = needs_sweep))
+  }
+  
+  # Fallback if nothing is found at all
+  return(list(name = "No result", type = "unknown", sweep = TRUE))
+}
+# 3. Logic for radius sweep
+
+radius_sweep_coords <- function(lat, lon) {
+  # We look up to 100 meters away for a "landmark" type
+  res <- google_places(location = c(lat, lon), radius = 100, key = key)
+  
+  if (nrow(res$results) > 0) {
+    # Flatten all types found in the area
+    all_nearby <- res$results %>%
+      select(name, types) %>%
+      tidyr::unnest(types) %>%
+      filter(!types %in% boring_types) # Keep only the interesting ones
+    
+    if (nrow(all_nearby) > 0) {
+      # Return the name of the most prominent interesting thing
+      return(paste0("Part of: ", all_nearby$name[1], " (", all_nearby$types[1], ")"))
+    }
+  }
+  return("No landmark found")
+}
+
+# --- 4. EXECUTION ---
+# This assumes your df has 'lat' and 'lon'
+
+safe_sweep <- possibly(radius_sweep_coords, otherwise = "Sweep Failed")
+
+processed_data <- api_ready_coords %>%
+  head(5) %>% # Test with 5 first
+  rowwise() %>%
+  mutate(
+    init = list(get_initial_info_coords(lat, lon)),
+    place_name = init$name,
+    primary_type = init$type,
+    needs_sweep = init$sweep
+  ) %>%
+  mutate(
+    final_category = if_else(needs_sweep, 
+                             safe_sweep(lat, lon), 
+                             primary_type)
+  )
+
+```
+
+### Third pass - Manual  
+
+
+### Standardize and effluent 
