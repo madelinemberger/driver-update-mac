@@ -27,6 +27,11 @@ iws_oahu_permits <- iws_permit_data %>%
 
 iws_oahu_permits_tmk <- iws_oahu_permits %>% pull(tmk)
 
+iws_kauai_maui_permits <- iws_oahu_permits <- iws_permit_data %>% 
+  mutate(tmk_char = as.character(TMK)) %>% 
+  filter(str_starts(tmk_char,"2") | str_starts(tmk_char,"4")) %>% 
+  rename(tmk = tmk_char)
+
 ```
 
 
@@ -40,7 +45,8 @@ iws_oahu_permits_tmk <- iws_oahu_permits %>% pull(tmk)
 
 # read in table 4 from oahu - this one has x y info
 
-oahu_table4 <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/oahu_tables/table4_percommercial_draft.csv"))
+oahu_table4 <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/oahu_tables/table4_percommercial_draft.csv")) %>% 
+  mutate(tmk = as.character(tmk))
 
 coords_fortbl4 <- oahu_table4 %>% 
   select(tmk, x,y) %>% 
@@ -96,7 +102,26 @@ hi_table4 <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/hi_t
   filter(data_presence == "Empty (All 0 or NA)")
 
 
-kauai_maui_table4 <- bind_rows(mauinui_table4, kauai_table4) # 471
+kauai_maui_table4 <- bind_rows(mauinui_table4, kauai_table4) %>% 
+  mutate(tmk = as.character(tmk))# 471
+
+
+km_addresses_table4 <- iws_kauai_maui_permits %>% 
+  clean_names() %>% 
+  filter(tmk %in% kauai_maui_table4$tmk) %>% 
+  #filter(tmk %!in% api_ready_coords_oah$tmk) %>% 
+  select(tmk, starts_with("project")) %>% 
+  mutate(street_house = if_else(is.na(project_street_address2), 
+                           project_street_address, 
+                           paste(project_street_address, "-", project_street_address2)),
+         # Create the full address with a conditional check for the zip code
+    address_full = if_else(is.na(project_zip_code) | project_zip_code == "NA",
+                           paste(street_house, project_city, sep = ", "),
+                           paste(street_house, project_city, project_zip_code, sep = ", ")),
+    
+    # Final step: convert everything to lower case
+    address_full = str_to_lower(address_full)
+    )
 
 
 # --------------------- Read in Spatialized Table 1  ------------------------- #
@@ -115,6 +140,25 @@ tmk_for_api_kauaimaui <- table1_withspatial %>%
   select(tmk, lat, lon) %>% 
   filter(tmk %in% kauai_maui_table4$tmk) #459 (we lost 12)
 
+
+coords_fortbl4 <- tmk_for_api_kauaimaui %>% 
+  select(tmk, lat,lon) %>% 
+  filter(!is.na(lat) & !is.na(lon)) %>% 
+  st_as_sf(coords = c("lat","lon"), crs = 4326)
+
+coordinates_latlon <- st_transform(coords_fortbl4, crs = 4326) #2633
+
+mapview(coordinates_latlon)
+
+api_ready_coords_km <- coordinates_latlon %>%
+  mutate(
+    lat = st_coordinates(.)[,2],
+    lon = st_coordinates(.)[,1],
+    google_coords = paste(lat, lon, sep = ",")
+  ) %>%
+  st_drop_geometry()
+
+
 tmk_for_api_oah <- table1_withspatial %>% 
   st_transform(crs = 4326) %>% 
   mutate(
@@ -124,6 +168,11 @@ tmk_for_api_oah <- table1_withspatial %>%
   #st_drop_geometry() %>%
   select(tmk, lat, lon) %>% 
   filter(tmk %in% oahu_table4$tmk) # 2218 (note we lost about 400, so these did not have dwell or tmk info?)
+
+
+# Read in IWS permits
+
+
 
 ```
 
@@ -184,10 +233,14 @@ private_schools <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/large-input-da
 
 all_schools <- rbind(public_schools, private_schools)
 
+all_schools_nosf <- st_drop_geometry(all_schools)
+
 
 # Pre-screening: Landuse code
 
-landuse_km <- st_join(tmk_for_api_kauaimaui, state_landuse, join = st_intersects)
+landuse_km <- st_join(tmk_for_api_kauaimaui, state_landuse, join = st_intersects) %>% 
+  select(tmk, lat, lon, ludcode,island) %>% 
+  st_drop_geometry()
 
 landuse_oah <- st_join(tmk_for_api_oah, state_landuse, join = st_intersects)
 
@@ -275,21 +328,270 @@ km_pts_with_fid <- tmk_for_api_kauaimaui %>%
 mapview(km_pts_with_fid)+
   mapview(tmk_for_api_kauaimaui, col.regions = "red")
 
-# create matrix
+# create matrix and test 
 
 within_200m_matrix <- st_is_within_distance(km_pts_with_fid, all_schools, dist = 200, sparse = FALSE)
+
 validation_set <- km_pts_with_fid %>%
   mutate(
     buffer_flagged_200m = rowSums(within_200m_matrix) > 0
   )
 
+km_pts_with_allinfo <- km_pts_with_fid %>% 
+  rename(school_name = School) %>% 
+  mutate(school_name = ifelse(is.na(school_name),"not a school",school_name)) %>% 
+  left_join(all_schools_nosf, by = "school_name") %>% 
+  mutate(tuition = case_when(
+    school_name == "Seabury Hall" ~ "22270",
+    school_name == "St. Catherine School" ~ "7300",
+    TRUE ~ tuition)) %>% 
+  left_join(landuse_km, by = c("tmk","lat","lon"))
+
+
+# join back to table 4 for kauai and maui 
+
+kauai_maui_table4_withinfo <- kauai_maui_table4 %>% 
+  left_join(km_pts_with_allinfo, by = "tmk") %>% 
+  select(tmk, x,y,lat,lon, school_name,classification,enrollment, faculty, tuition)
+
+kauai_maui_table4_schools <- kauai_maui_table4_withinfo %>% 
+  filter(school_name != "not a school")
+
+kauai_maui_table4_other<- kauai_maui_table4_withinfo %>% 
+  filter(!is.na(Place))
+
+kauai_maui_identified <- rbind(kauai_maui_table4_schools, kauai_maui_table4_other)
+
+
+write_csv(kauai_maui_identified,file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/table4_pass1_complete_kauaimaui.csv"))
+
+
+# filter out list for api
+
+kauai_maui_api <- api_ready_coords_km %>% 
+  filter(tmk %!in% kauai_maui_identified)
+  
+
+```
+
+
+``` {r}
+# ok its pretty good! letʻs try it on Oahu
+
+oahu_schools <- all_schools %>% 
+  filter(district %in% c("Honolulu",
+                         "Central",
+                         "Leeward",
+                         "Windward"))
+
+oahu_private_schools <- private_schools %>% 
+  filter(city %in% c("Honolulu",
+                     "Aiea",
+                     "Kailua",
+                     "Ewa",
+                     "Kane'ohe",
+                     "Kapolei",
+                     "Mililani",
+                     "Mililani Town",
+                     "Pearl City",
+                     "Waianae",
+                     "Wahiawa",
+                     "Waialua",
+                     "Waipahu"))
+
+
+all_oahu_schools <- rbind(oahu_schools, oahu_private_schools)
+
+all_oahu_schools_nosf <- st_drop_geometry(all_oahu_schools)
+
+oah_pts_with_fid <- tmk_for_api_oah %>% 
+  mutate(FID = row_number())
+
+
+within_200m_matrix <- st_is_within_distance(oah_pts_with_fid, all_oahu_schools, dist = 200, sparse = FALSE)
+
+validation_set <- oah_pts_with_fid %>%
+  mutate(
+    buffer_flagged_200m = rowSums(within_200m_matrix) > 0
+  )
+
+possible_schools <- validation_set %>% 
+  filter(buffer_flagged_200m == TRUE)
+
+# manually check
+
+mapview(possible_schools, col.regions = "yellow", alpha = 0.5) + 
+  mapview(all_oahu_schools, col.regions = "lightgreen")
+
+```
+
+
+``` {r}
+# 1. Using the FID from "possible schools" 
+schools_confirmed_df <- tibble(
+  FID2 = list(
+    22, 55, 34, c(30, 31), 210, 42, 89, c(40, 41), 37, 
+    96, 106, 97, c(68, 74), 73, 121, c(82, 112, 113), 
+    44, c(46, 47, 48), 43, 45
+  ),
+  School_Name = c(
+    "Kahaluu Elem School",
+    "Enchanted Lake Elem School",
+    "Malama Honua - PCS",
+    "Pope Elem School",
+    "Mary Star of the Sea Early Learning Center", # Check this TMK
+    "La Pietra - Hawaii School for Girls",
+    "Liholiho Elem School",
+    "Kaimuki High School",
+    "Hokulani Elem School",
+    "Mid-Pacific Institute",
+    "Lunalilo Elem School",
+    "Maryknoll School",
+    "Hawaiian Mission Academy - 9-12 Campus",
+    "Roosevelt High School",
+    "Stevenson Middle School",
+    "Lincoln Elem School",
+    "Kawaiaha'o Church School",
+    "St. Andrew's Schools - The Priory",
+    "Central Middle School",
+    "Royal Elem School"
+  )
+) %>% 
+  unnest(FID2) # Separates combined arrays into individual rows automatically
+
+# 2. Clean Other Land Uses Data Frame
+other_landuse_df <- tibble(
+  FID2 = list(
+    21, 62, 57, 128, 129, 125, 39, 123, 122, 124, 95, 104,
+    c(83, 84, 85, 86, 87), 88, c(77, 78), 76, c(35, 36)
+  ),
+  Classification = c(
+    "residence",
+    "powerplant",
+    "HIDOE School Food Services Branch",
+    "The Arc in Hawaii Diamond Head",
+    "Student Services Support Branch",
+    "ACE Hardware",
+    "Hawaii Storage",
+    "Palolo Public Housing",
+    "Anuenue School",
+    "Gussies House",
+    "Manoa Marketplace",
+    "Church with pottery guild",
+    "Makiki Skate Park or St Clements School",
+    "Residence or Hawaii Mission Academy Ka Lama Iki",
+    "apartment building",
+    "residence",
+    "mixed commercial"
+  )
+) %>% 
+  unnest(FID2)
+
+
+#2. Confirmed with other FID from tmk_api_oahu
+
+added_schools_confirmed_df <- tibble(
+  FID = list(
+    111, 1875, 590, 597, 2115, 2113, 972, 1446, 1448, 1852, 
+    1794, 121, 308, c(304, 306), 294, c(70, 263), 217, c(53, 230, 231), 
+    41, c(1131, 1132, 1134)
+  ),
+  School_Name = c(
+    "Kawananakoa Middle School",
+    "Hongwanji Mission School",
+    "Waolani Judd Nazarene School",
+    "Lanakila Elem School",
+    "Hawaii Technology Academy-PCS",
+    "Waipahu Elem School",
+    "Iroquois Point Elem School",
+    "Barbers Point Elem School",
+    "Island Pacific Academy",
+    "Nanaikapono Elem School",
+    "Mililani Ike Elem School",
+    "Waialua High & Inter School",
+    "St. Michael School",
+    "Waialua Elem School",
+    "Haleiwa Elem School",
+    "Sunset Beach Elem School",
+    "Laie Elem School",
+    "Hauula Elem School",
+    "Kaaawa Elem School",
+    "Waiahole Elem School"
+  )
+) %>% 
+  unnest(FID)
+
+# 2. Clean Other Land Uses Data Frame (Added FID Set)
+added_other_landuse_df <- tibble(
+  FID = list(
+    1880, 1862, 591, 1951, 2119, 977, 986, 1854, 2008, 295, 
+    c(262, 264), 214
+  ),
+  Classification = c(
+    "Auwaiolimu Neighborhood Park",
+    "Pauoa Substation",
+    "City Memorial Park",
+    "House across the street from the Children's House",
+    "Hawaii Plantation Village",
+    "Strip mall in Ewa Beach",
+    "Reynolds Recycling / Mall in Ewa Beach",
+    "Longs Drugs",
+    "HDOT Waianae Baseyard",
+    "House Across the street from Haleiwa Elementary School",
+    "Ehukai Beach Park",
+    "Kahuku Sugar Mill"
+  )
+) %>% 
+  unnest(FID)
+
+# join everything together
+possible_schools_withname <- possible_schools %>% 
+  mutate(FID2 = row_number()) %>% 
+  left_join(schools_confirmed_df, by = "FID2") %>% 
+  left_join(other_landuse_df, by = "FID2") %>% 
+  left_join(added_schools_confirmed_df, by = "FID") %>% 
+  left_join(added_other_landuse_df, by = "FID") %>% 
+  mutate(school_name = coalesce(School_Name.x, School_Name.y)) %>% 
+  mutate(Classification = coalesce(Classification.x, Classification.y)) %>% 
+  select(-Classification.x, -Classification.y,-School_Name.x, -School_Name.y)
+
+# join enrollment info
+confirmed_schools_withinfo <- possible_schools_withname %>% 
+  mutate(school_name = ifelse(is.na(school_name),"not a school",school_name)) %>% 
+  left_join(all_oahu_schools_nosf, by = "school_name") %>% 
+  filter(school_name != "not a school") %>%
+  mutate(classification = "school")
+
+
+confirmed_others <- possible_schools_withname %>% 
+  filter(!is.na(Classification))
+  
+
+# add landuse, schoool or classification info back to original table 4s. 
+
+oahu_table4_wSchools <- oahu_table4 %>% 
+  left_join(possible_schools_withname, by = "tmk") %>%
+  mutate(Classification = ifelse(!is.na(school_name),"school",Classification))
+ 
+
+
+# save oahu table 4
+
+#write_csv(oahu_table4_wotherID,file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/oahu_tables/table4_pass1_complete.csv"))
+
+# filter out missig for API
+oahu_for_pass2 <- oahu_table4_wSchools %>% 
+  filter(is.na(Classification))
+
+
+oahu_api_ready_coords <- api_ready_coords_oah %>% 
+  filter(tmk %in% oahu_for_pass2$tmk)
 
 
 ```
 
 
-
-### Second pass: Google Places
+### Second pass: Google Places, using Coordinations
 
 Activate Google Places API
 
@@ -320,8 +622,150 @@ key <- Sys.getenv("GOOGLE_PLACES_KEY")
 library(googleway)
 library(dplyr)
 
+# ----------- Search by coordinates improved
 
-# --- PART A: SEARCH BY ADDRESS ---
+library(tidyr)
+library(purrr)
+
+boring_types <- c("premise", "establishment", "point_of_interest", "political", 
+                  "floor", "locality", "neighborhood", "geocode","route")
+
+api_count <- 0
+safety_limit <- 3500
+
+# Unified Function: One API Call, Smart Local Filtering
+get_place_category <- function(lat, lon) {
+  
+  # Increment global counter
+  api_count <<- api_count + 1 
+  
+  if (api_count > safety_limit) {
+    stop(paste("Safety limit of", safety_limit, "reached. Stopping to protect your wallet!"))
+  }
+  
+  # Call once with a reasonable operational radius (e.g., 50 meters)
+  res <- google_places(location = c(lat, lon), radius = 50, key = key)
+  
+  # Check if we got valid results back
+  if (!is.null(res$results) && length(res$results) > 0 && nrow(res$results) > 0) {
+    
+    # Process the results completely inside R memory (Free!)
+    # We unnest the types list column to look at all categories returned per place
+    df_results <- res$results %>%
+      select(name, types) %>%
+      mutate(row_order = row_number()) %>% # Keep track of Google's prominence ranking
+      unnest(types)
+    
+    # Strategy A: Try to find the highest-ranked "interesting" business type
+    interesting_places <- df_results %>%
+      filter(!types %in% boring_types)
+    
+    if (nrow(interesting_places) > 0) {
+      # Grab the top-ranked non-boring place
+      top_match <- interesting_places %>%
+        filter(row_order == min(row_order)) %>%
+        slice(1)
+      return(list(name = top_match$name, type = top_match$types))
+    }
+    
+    # Strategy B: Fallback if EVERYTHING returned was labeled boring
+    # Just take Google's absolute #1 top result's first type
+    fallback_place <- res$results[1, ]
+    fallback_type <- if (!is.null(fallback_place$types[[1]])) fallback_place$types[[1]][1] else "unknown"
+    return(list(name = fallback_place$name, type = fallback_type))
+  }
+  
+  # Strategy C: Absolute fallback if Google found nothing at those coordinates
+  return(list(name = "No result", type = "unknown"))
+}
+
+# --- EXECUTION OAHU --- #
+# Safely wrap the function to prevent an API error from crashing your whole loop
+safe_get_place <- possibly(get_place_category, otherwise = list(name = "Error", type = "error"))
+
+processed_data2 <- oahu_api_ready_coords %>%
+  filter(tmk %!in% c("149004001","149004001","149001007","148010007","156003038")) %>% 
+  head(5) %>% # Test cluster
+  rowwise() %>%
+  mutate(
+    api_res = list(safe_get_place(lat, lon)),
+    place_name = api_res$name,
+    final_category = api_res$type
+  ) %>%
+  select(-api_res) # Drop the temporary list column
+
+processed_data3 <- oahu_api_ready_coords %>%
+  filter(tmk %!in% c("149004001","149004001","149001007","148010007","156003038")) %>% 
+  filter(tmk %!in% c("156002028","156002001","156005009","156006044","156002013")) %>% 
+  #head(5) %>% # Test cluster
+  rowwise() %>%
+  mutate(
+    api_res = list(safe_get_place(lat, lon)),
+    place_name = api_res$name,
+    final_category = api_res$type
+  ) %>%
+  select(-api_res)
+
+# check out results? 
+
+processed_data3_sf <- st_as_sf(processed_data3, coords = c("lat","lon"), crs = 4326) %>% 
+  st_transform(crs = 4326) %>% 
+  filter(final_category != "error")
+
+mapview(processed_data3_sf, zcol = "final_category")
+
+
+# --- EXECUTION KAUAI MAUI --- #
+
+kauai_maui_1 <- kauai_maui_api %>% 
+  rowwise() %>%
+  mutate(
+    api_res = list(safe_get_place(lat, lon)),
+    place_name = api_res$name,
+    final_category = api_res$type
+  ) %>%
+  select(-api_res)
+
+unique(kauai_maui_1$final_category)
+
+kauai_maui_pass2_sucess <- kauai_maui_1 %>% 
+  filter(final_category %!in% boring_types) %>% 
+  filter(final_category != "unknown") # N = 220
+
+# join to table 4
+
+kauai_maui_table4_pass2 <- kauai_maui_table4 %>% 
+  left_join(kauai_maui_pass2_sucess, by = "tmk")
+
+# still needed - add address
+
+kauai_maui_pass3 <- kauai_maui_table4_pass2 %>% 
+  filter(tmk %!in% kauai_maui_pass2_sucess$tmk) # N = 222
+
+api_pass3 <- kauai_maui_api %>% 
+  filter(tmk %in% kauai_maui_pass3$tmk)
+
+# read in iws permits for kauai and maui to get the addresses
+
+km_addresses_forpass3 <- km_addresses_table4 %>% 
+  mutate(tmk = as.character(tmk)) %>% 
+  filter(tmk %in% kauai_maui_pass3$tmk) %>% 
+  left_join(api_pass3, by = "tmk")
+
+km_addresses_forpass3_sf <- km_addresses_forpass3 %>% 
+  filter(!is.na(lat)) %>% 
+  st_as_sf(coords = c("lon","lat"), crs = 4326)
+
+mapview(km_addresses_forpass3_sf)
+
+```
+
+### Third pass - Search by Address
+
+```{r}
+
+
+# --- SEARCH BY ADDRESS ---
 # try one from address dataframe
 addr_example <- "66-1009 kaukona hua road, waialua"
 
@@ -335,12 +779,8 @@ res_addr <- google_find_place(
 addr_types <- res_addr$candidates$types[[1]]
 print(paste("Address is a:", paste(addr_types, collapse = ", ")))
 
-# set up saftey limit
 
-# 1. Initialize the counter at the very top
-api_count <- 0
-safety_limit <- 200
-
+# function 
 # 2. Logic for Address Search + Coordinate Extraction
 get_detailed_address_info <- function(addr_string) {
   # Safety count
@@ -360,54 +800,35 @@ get_detailed_address_info <- function(addr_string) {
     fields = c("name", "type", "geometry")
   )
   
-  if (length(res$candidates) > 0) {
-    top_cand <- res$candidates
-    main_type <- top_cand$types[[1]][1]
-    coords <- top_cand$geometry$location
+  if (length(res$candidates) > 0 && nrow(res$candidates) > 0) {
     
-    # Check if we need to dig deeper
-    needs_sweep <- main_type %in% boring_types
+    # isolate top match row
+    top_cand <- res$candidates[1, ]
+    # extract type from top match
+    main_type <- if (!is.null(top_cand$types[[1]])) top_cand$types[[1]][1] else "unknown"
+    
+    # get coordinates safely from the nested geometry data frame
+    lat_val <- top_cand$geometry$location$lat[1]
+    lon_val <- top_cand$geometry$location$lng[1] # Note the 'lng'
+    
+    # Flag if it lands on a boring type
+    needs_check <- main_type %in% boring_types
     
     return(list(
       name = top_cand$name[1], 
       type = main_type, 
-      lat = coords$lat[1], 
-      lon = coords$lng[1], 
-      sweep = needs_sweep
+      lat = lat_val,
+      lon = lon_val,
+      check = needs_check
     ))
   }
-  return(list(name = NA, type = NA, lat = NA, lon = NA, sweep = FALSE))
+  return(list(name = NA, type = NA, lat = NA, lon = NA, check = FALSE))
 }
 
-# 3. The Radius Sweep (Same as before, using the extracted coordinates)
-radius_sweep <- function(lat, lon) {
-  if (is.na(lat)) return(NA)
-  
-  # Saftey stop for bank account
-  api_count <- api_count + 1
-  if (api_count > safety_limit){
-    stop("Saftey limit reached during radius sweep")
-  }
-  
-  res <- google_places(location = c(lat, lon), radius = 100, key = key)
-  
-  if (nrow(res$results) > 0) {
-    # Look for the first thing that ISN'T boring
-    interesting_finds <- res$results %>%
-      unnest(cols = c(types)) %>%
-      filter(!types %in% boring_types)
-    
-    if (nrow(interesting_finds) > 0) {
-      return(paste0("Part of: ", interesting_finds$name[1], " (", interesting_finds$types[1], ")"))
-    }
-  }
-  return("No larger landmark found")
-}
 
-# 4. Execute on address df
+# 4. Execute on address for kauai and Maui
 
-results_addresses <- addresses_fortbl4 %>%
-  head(5) %>% # Test batch
+results_addresses <- km_addresses_forpass3 %>%
   rowwise() %>%
   mutate(
     # Step 1: Initial Address Lookup
@@ -416,96 +837,232 @@ results_addresses <- addresses_fortbl4 %>%
     found_type = init$type,
     temp_lat = init$lat,
     temp_lon = init$lon,
-    needs_sweep = init$sweep
+    check = init$check
   )
 
-results_sweep <- results_addresses %>% 
-  mutate(
-    # Step 2: If address was 'premise', look around that coordinate
-    final_insight = if_else(needs_sweep, 
-                            radius_sweep(temp_lat, temp_lon), 
-                            found_type)
-  ) %>%
-  select(-init) # Clean up the list column
 
 
-# --------------- PART B: Search by Coordinates ----------------------
-# Workflow: 1) if it has a specific place, get it. if it doesn't flag for radius search
 
-boring_types <- c("premise", "establishment", "point_of_interest", "political", "floor", "locality")
 
-# 2. Logic for Step 1: Specific Check
-get_initial_info_coords <- function(lat, lon) {
-  # Safety count
-  api_count <<- api_count + 1 
-  
-  # THE TOLL BOOTH: Check the limit BEFORE calling Google
-  if (api_count > safety_limit) {
-    stop(paste("Safety limit of", safety_limit, "reached. Stopping to save your bank account!"))
-  }
-  # Perform the search
-  res <- google_places(location = c(lat, lon), radius = 10, key = key)
-  
-  # Check if 'results' exists and has rows safely
-  if (!is.null(res$results) && length(res$results) > 0 && nrow(res$results) > 0) {
-    top_place <- res$results[1, ]
-    
-    # Safely extract the first type
-    main_type <- if (!is.null(top_place$types[[1]])) top_place$types[[1]][1] else "unknown"
-    
-    # Check if we need a radius sweep (boring_types defined earlier)
-    needs_sweep <- main_type %in% boring_types
-    
-    return(list(name = top_place$name, type = main_type, sweep = needs_sweep))
-  }
-  
-  # Fallback if nothing is found at all
-  return(list(name = "No result", type = "unknown", sweep = TRUE))
-}
-# 3. Logic for radius sweep
-
-radius_sweep_coords <- function(lat, lon) {
-  # We look up to 100 meters away for a "landmark" type
-  res <- google_places(location = c(lat, lon), radius = 100, key = key)
-  
-  if (nrow(res$results) > 0) {
-    # Flatten all types found in the area
-    all_nearby <- res$results %>%
-      select(name, types) %>%
-      tidyr::unnest(types) %>%
-      filter(!types %in% boring_types) # Keep only the interesting ones
-    
-    if (nrow(all_nearby) > 0) {
-      # Return the name of the most prominent interesting thing
-      return(paste0("Part of: ", all_nearby$name[1], " (", all_nearby$types[1], ")"))
-    }
-  }
-  return("No landmark found")
-}
-
-# --- 4. EXECUTION ---
-# This assumes your df has 'lat' and 'lon'
-
-safe_sweep <- possibly(radius_sweep_coords, otherwise = "Sweep Failed")
-
-processed_data <- api_ready_coords %>%
-  head(5) %>% # Test with 5 first
-  rowwise() %>%
-  mutate(
-    init = list(get_initial_info_coords(lat, lon)),
-    place_name = init$name,
-    primary_type = init$type,
-    needs_sweep = init$sweep
-  ) %>%
-  mutate(
-    final_category = if_else(needs_sweep, 
-                             safe_sweep(lat, lon), 
-                             primary_type)
-  )
 
 ```
 
-### Third pass - Manual  
+### Build Final Table 4s!
+
+Combine all the findings from pass 1, 2 and 3. Everything else will have to be a manual classification. First - we need to map to what Bob found.
+
+Report here: chrome-extension://efaidnbmnnnibpcajpcglclefindmkaj/https://health.hawaii.gov/wastewater/files/2015/09/OSDS_OAHU.pdf
+
+```{r}
+
+# recreate table 3 form the Oahu priortization report for type to effluent mapping 
+
+table_3_Oahu <- data.frame(
+  type = c("baseyard",
+           "business",
+           "cemetary",
+           "church",
+           "golf course",
+           "non-profit organization",
+           "non-profit organzation with showers",
+           "park",
+           "school - with gym",
+           "school - without gym"),
+  min_estEffluent_gpd = c(
+    195,
+    130,
+    1200,
+    540,
+    540,
+    240,
+    1825,
+    200,
+    600,
+    12625
+  ),
+    max_estEffluent_gpd = c(
+    390,
+    4590,
+    2400,
+    2600,
+    1080,
+    2200,
+    2500,
+    800,
+    5640,
+    42425
+  )
+) %>% 
+  mutate(median_effluent_gpd = (max_estEffluent_gpd + min_estEffluent_gpd) / 2)
+
+# other islands?
+
+```
 
 
-### Standardize and effluent 
+#### Kauai and Maui Nui
+```{r}
+
+# pass 1 # need to add table 3 mapping
+kauai_maui_identified_clean <- kauai_maui_identified %>% 
+  select(tmk,lat, lon, school_name,place_name = Place, enrollment, faculty,ludcode) %>% 
+  mutate(place_name = ifelse(school_name != "not a school","school",place_name)) %>% 
+  mutate(type_table3 = case_when(
+    place_name == "school" ~ "school with showers",
+    place_name == "Healthy Hut Natural Foods" ~ "business",
+    place_name %in% c("Post office","Pot office") ~ "non-profit organization",
+    place_name %in% c("Church","LDS Church") ~ "church",
+    place_name %in% "West Inn Hotel" ~ "business",
+    TRUE ~ place_name
+  )) %>% 
+  mutate(class_method = "manual ID")
+
+
+
+# pass 2 # tmk, lat , lon, place_name, final_cat. need to add school details
+kauai_maui_pass2_forjoin <- kauai_maui_pass2_sucess %>% 
+  select(-google_coords) %>% 
+  mutate(
+    table_3_type = case_when(
+      # --- CHURCH ---
+      final_category == "church" ~ "church",
+      
+      # --- CEMETARY ---
+      final_category %in% c("cemetery", "cemetary") ~ "cemetary",
+      
+      # --- PARK ---
+      final_category %in% c("park", "campground") ~ "park",
+      
+      # --- SCHOOLS ---
+      # Defaulting to 'without gym' since the API doesn't specify structural facilities
+      final_category %in% c("school", "primary_school", "secondary_school") ~ "school - without gym",
+      
+      # --- NON PROFIT --
+      # Defaulting without shower
+      final_category %in% c("local_government_office", "post_office") ~ "non-profit organization",
+      
+      # --- BASEYARD ---
+      final_category %in% c("general_contractor", "roofing_contractor", 
+                            "storage", "car_repair", "hardware_store", "laundry") ~ "baseyard",
+      
+      # --- BUSINESS (Food, Retail, Offices, Medical) ---
+      final_category %in% c(
+        "restaurant", "food", "cafe", "meal_takeaway", "bakery", "bar",
+        "store", "grocery_or_supermarket", "supermarket", "convenience_store", 
+        "liquor_store", "clothing_store", "jewelry_store", "home_goods_store", "shopping_mall",
+        "real_estate_agency", "accounting", "finance", "bank", "atm", "travel_agency",
+        "health", "doctor", "dentist", "physiotherapist", "spa", "beauty_salon", "gym",
+        "lodging", "gas_station", "tourist_attraction", "art_gallery"
+      ) ~ "business",
+      
+      # --- CATCH-ALL FOR ERRORS / BLANKS ---
+      final_category == "error" ~ NA_character_,
+      is.na(final_category)     ~ NA_character_,
+      
+      # Safety line: anything missed gets flagged so your code doesn't crash
+      TRUE ~ "unclassified_check_me"
+    )
+  ) %>% 
+  mutate(class_method = "google places coordiate search") %>%
+  rename(found_type = final_category)
+
+
+# pass 3 
+results_addresses_forjoin <- results_addresses %>% 
+  select(tmk, lat,lon,found_name,found_type) %>% 
+  distinct() %>% 
+  rowwise() %>% # Ensure rowwise is active if processing row-by-row text
+  mutate(
+    # Step 1: Clean up the 'establishment' tags by looking directly at the names
+    table_3_type = case_when(
+      found_type != "establishment" ~ "unknown", # If Google gave a good tag, keep it!
+      
+      # --- Manual Name Overrides for 'establishment' rows ---
+      
+      # PARKS
+      str_detect(found_name, "(?i)Park|Beach") ~ "park",
+      
+      # SCHOOLS / COLLEGES
+      str_detect(found_name, "(?i)School|Academy|College|KIPA") ~ "school - with gym",
+      
+      # INDUSTRIAL / TRUCKING / MILLS (Baseyards)
+      str_detect(found_name, "(?i)Concrete|Mill|Farming Operation|Biodiesel") ~ "baseyard",
+      
+      # INSTITUTIONAL / CIVIL (Non-Profit No Shower)
+      str_detect(found_name, "(?i)Postal|Civic Center|Neighborhood Center|Foundation") ~ "non-profit organization",
+      
+      # RETAIL / FOOD / MARKETS / TOURISM (Business)
+      str_detect(found_name, "(?i)Bar|Restaurant|Joe's|Duke's|Market|Center|Zipline|Tour|Weddings|Housing|Camp|Spa") ~ "business",
+      
+      # Fallback if an establishment name doesn't hit a keyword
+      TRUE ~ "establishment"
+    )
+  ) %>%
+  ungroup() %>% 
+  mutate(class_method = "google places address search") %>% 
+  rename(place_name = found_name)
+
+
+
+# combine all together, compare to table 4, and mark missing
+
+kauai_maui_identified_final <- kauai_maui_identified_clean %>% 
+  select(tmk,lat,lon, place_name,table_3_type = type_table3,class_method) %>% 
+  mutate(found_type = NA) %>% 
+  rbind(kauai_maui_pass2_forjoin) %>% 
+  rbind(results_addresses_forjoin)
+
+kauai_maui_table4_final <- kauai_maui_table4 %>% 
+  left_join(kauai_maui_identified_final, by = "tmk") # duplicates we need to get rid of
+
+kauai_maui_table4_deduplicated <- kauai_maui_table4_final %>%
+  # Step 1: Create ordering scores for your logic
+  mutate(
+    # Method rank: lower number = better reliability
+    method_rank = case_when(
+      class_method == "manual ID" ~ 1,
+      class_method == "google places coordiate search"    ~ 2,
+      TRUE                            ~ 3
+    ),
+    
+    # Category rank: lower number = more specific
+    category_rank = case_when(
+      # Specific Table 3 categories are the absolute best
+      table_3_type %in% c("school - without gym", "school - with gym", 
+                            "church", "cemetary", "park", "baseyard", "business", "non-profit organization") ~ 1,
+      
+      # Vague API results are second-best
+      table_3_type == "establishment" ~ 2,
+      
+      # Premise/Route/NA are the least useful
+      found_type %in% c("premise", "route", "street_address","error") ~ 3,
+      is.na(found_type) ~ 4,
+      
+      TRUE ~ 5
+    )
+  ) %>% 
+  # Step 2: Group by your unique spatial keys
+  group_by(tmk, lat, lon) %>%
+  # Step 3: Sort the duplicates inside each group by your ranks
+  # R will sort by method_rank first, and break ties using category_rank
+  arrange(method_rank, category_rank, .by_group = TRUE) %>%
+  # Step 4: Grab the #1 best row for each TMK combination
+  slice(1) %>%
+  # Step 5: Clean up by unlocking the dataframe and dropping our temporary rank columns
+  ungroup() %>%
+  select(-method_rank, -category_rank) # 247
+
+
+kauai_maui_table4_still_missing <- kauai_maui_table4_deduplicated %>% 
+  filter(table_3_type == "unknown" | is.na(table_3_type))  # N 224
+  
+
+# SAVE!!
+
+write_csv(kauai_maui_table4_deduplicated,file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/table4_kauaimaui_Final_allentries.csv"))
+
+
+```
+
+#### Oahu 
+
