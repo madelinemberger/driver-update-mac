@@ -23,6 +23,7 @@ iws_oahu_permits <- iws_permit_data %>%
     rowid_to_column("permit_id") %>% 
   mutate(approval_date = mdy(FinalApprovalDate),
          year = year(approval_date)) %>% 
+  rename(tmk = full_taxid) %>% 
   clean_names()
 
 iws_oahu_permits_tmk <- iws_oahu_permits %>% pull(tmk)
@@ -168,10 +169,6 @@ tmk_for_api_oah <- table1_withspatial %>%
   #st_drop_geometry() %>%
   select(tmk, lat, lon) %>% 
   filter(tmk %in% oahu_table4$tmk) # 2218 (note we lost about 400, so these did not have dwell or tmk info?)
-
-
-# Read in IWS permits
-
 
 
 ```
@@ -579,9 +576,13 @@ oahu_table4_wSchools <- oahu_table4 %>%
 
 #write_csv(oahu_table4_wotherID,file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/oahu_tables/table4_pass1_complete.csv"))
 
+# read in pass1 if starting here
+
+oahu_pass1_complete <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/oahu_tables/table4_pass1_complete.csv"))
+
 # filter out missig for API
-oahu_for_pass2 <- oahu_table4_wSchools %>% 
-  filter(is.na(Classification))
+oahu_for_pass2 <- oahu_pass1_complete %>% 
+  filter(is.na(classification))
 
 
 oahu_api_ready_coords <- api_ready_coords_oah %>% 
@@ -680,8 +681,35 @@ get_place_category <- function(lat, lon) {
 }
 
 # --- EXECUTION OAHU --- #
+
 # Safely wrap the function to prevent an API error from crashing your whole loop
 safe_get_place <- possibly(get_place_category, otherwise = list(name = "Error", type = "error"))
+
+processed_oah_data_all <- oahu_api_ready_coords %>%
+  rowwise() %>%
+  mutate(
+    api_res = list(safe_get_place(lat, lon)),
+    place_name = api_res$name,
+    final_category = api_res$type
+  ) %>%
+  select(-api_res)
+
+boring_types_updated <- boring_types[c(1,2,4:9)] 
+  
+oahu_pass2_successful <- processed_oah_data_all %>% 
+  filter(final_category %!in% boring_types_updated) %>% 
+  filter(final_category != "unknown") # N = 964
+
+oahu_for_pass3 <- processed_oah_data_all %>% 
+  filter(tmk %!in% oahu_pass2_successful$tmk) # N = 1628
+
+# save both for future processing. 
+
+write_csv(oahu_pass2_successful,file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/oahu_tables/table4_pass2_complete.csv"))
+
+write_csv(oahu_for_pass3,file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/oahu_tables/table4_pass3_stillunknown.csv"))
+
+# old 
 
 processed_data2 <- oahu_api_ready_coords %>%
   filter(tmk %!in% c("149004001","149004001","149001007","148010007","156003038")) %>% 
@@ -708,7 +736,9 @@ processed_data3 <- oahu_api_ready_coords %>%
 
 # check out results? 
 
-processed_data3_sf <- st_as_sf(processed_data3, coords = c("lat","lon"), crs = 4326) %>% 
+
+
+processed_data3_sf <- st_as_sf(processed_data3, coords = c("lon","lat"), crs = 4326) %>% 
   st_transform(crs = 4326) %>% 
   filter(final_category != "error")
 
