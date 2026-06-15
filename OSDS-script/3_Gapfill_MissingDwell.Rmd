@@ -634,14 +634,18 @@ boring_types <- c("premise", "establishment", "point_of_interest", "political",
 api_count <- 0
 safety_limit <- 3500
 
+safe_google_call <- possibly(
+  function(lat, lon, key) { google_places(location = c(lat, lon), radius = 50, key = key) }, 
+  otherwise = NULL
+)
+
 # Unified Function: One API Call, Smart Local Filtering
 get_place_category <- function(lat, lon) {
   
   # Increment global counter
   api_count <<- api_count + 1 
-  
   if (api_count > safety_limit) {
-    stop(paste("Safety limit of", safety_limit, "reached. Stopping to protect your wallet!"))
+    stop(paste("SAFETY STOP: Limit of", safety_limit, "reached! Full pipeline killed."))
   }
   
   # Call once with a reasonable operational radius (e.g., 50 meters)
