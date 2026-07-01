@@ -574,7 +574,7 @@ oahu_table4_wSchools <- oahu_table4 %>%
 
 # save oahu table 4
 
-#write_csv(oahu_table4_wotherID,file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/oahu_tables/table4_pass1_complete.csv"))
+write_csv(oahu_table4_wSchools,file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/oahu_tables/table4_pass1_complete.csv"))
 
 # read in pass1 if starting here
 
@@ -582,7 +582,7 @@ oahu_pass1_complete <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-dat
 
 # filter out missig for API
 oahu_for_pass2 <- oahu_pass1_complete %>% 
-  filter(is.na(classification))
+  filter(is.na(Classification))
 
 
 oahu_api_ready_coords <- api_ready_coords_oah %>% 
@@ -739,7 +739,6 @@ processed_data3 <- oahu_api_ready_coords %>%
   select(-api_res)
 
 # check out results? 
-
 
 
 processed_data3_sf <- st_as_sf(processed_data3, coords = c("lon","lat"), crs = 4326) %>% 
@@ -952,7 +951,6 @@ kauai_maui_identified_clean <- kauai_maui_identified %>%
   mutate(class_method = "manual ID")
 
 
-
 # pass 2 # tmk, lat , lon, place_name, final_cat. need to add school details
 kauai_maui_pass2_forjoin <- kauai_maui_pass2_sucess %>% 
   select(-google_coords) %>% 
@@ -1050,7 +1048,7 @@ kauai_maui_table4_final <- kauai_maui_table4 %>%
   left_join(kauai_maui_identified_final, by = "tmk") # duplicates we need to get rid of
 
 kauai_maui_table4_deduplicated <- kauai_maui_table4_final %>%
-  # Step 1: Create ordering scores for your logic
+  # Step 1: Create ordering scores for logic
   mutate(
     # Method rank: lower number = better reliability
     method_rank = case_when(
@@ -1075,14 +1073,14 @@ kauai_maui_table4_deduplicated <- kauai_maui_table4_final %>%
       TRUE ~ 5
     )
   ) %>% 
-  # Step 2: Group by your unique spatial keys
+  # Step 2: Group by unique spatial keys
   group_by(tmk, lat, lon) %>%
-  # Step 3: Sort the duplicates inside each group by your ranks
+  # Step 3: Sort the duplicates inside each group by ranks
   # R will sort by method_rank first, and break ties using category_rank
   arrange(method_rank, category_rank, .by_group = TRUE) %>%
   # Step 4: Grab the #1 best row for each TMK combination
   slice(1) %>%
-  # Step 5: Clean up by unlocking the dataframe and dropping our temporary rank columns
+  # Step 5: Clean up by unlocking the dataframe and dropping temporary rank columns
   ungroup() %>%
   select(-method_rank, -category_rank) # 247
 
@@ -1099,4 +1097,234 @@ write_csv(kauai_maui_table4_deduplicated,file.path(driver_dir,"4_OSDS_N_Runoff/o
 ```
 
 #### Oahu 
+
+```{r}
+
+oahu_pass1_id <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/oahu_tables/table4_pass1_complete.csv"))
+
+oahu_pass2_id <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/oahu_tables/table4_pass2_complete.csv"))
+
+oahu_still_missing <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/oahu_tables/table4_pass3_stillunknown.csv"))
+
+# ------- map classes in pass 1 to table 3
+
+oahu_p1_mapped <- oahu_pass1_id %>% 
+  select(tmk,lat, lon, school_name,Classification) %>% 
+  mutate(classification = str_to_lower(Classification)) %>% 
+  mutate(name_detect = case_when(
+    str_detect(classification,"church") ~ "church",
+    str_detect(classification,"school") ~ "school",
+    str_detect(classification,"park") ~ "park",
+    str_detect(classification,"apartment") | str_detect(classification,"house") | str_detect(classification,"housing") | str_detect(classification, "residence") ~ "residential",
+    str_detect(classification,"powerplant") | str_detect(classification,"substation") ~ "powerplant",
+    str_detect(classification,"branch") | str_detect(classification,"hdot") | str_detect(classification,"arc") ~ "nonprofit or government",
+    TRUE ~ "business"
+  )) %>% 
+  mutate(name_detect = ifelse(is.na(classification),NA,name_detect)) %>% 
+  mutate(table_3_type = case_when(
+    name_detect == "school" ~ "school with gym",
+    name_detect == "business" ~ "business",
+    name_detect == "park" ~ "park",
+    name_detect == "church" ~ "church",
+    name_detect == "nonprofit or government" ~ "nonprofit",
+    name_detect == "powerplant" ~ "nonprofit",
+    name_detect == "residential" ~ "residential",
+    TRUE ~ NA
+  )) %>% 
+  mutate(class_method = "manual ID")
+
+oahu_pass1_mapped_forjoin <-oahu_p1_mapped %>% 
+  select(tmk, lat, lon, place_name = classification,table_3_type,class_method) %>% 
+  mutate(found_type = NA)
+  
+  
+# ------------- map classes from pass 2 to table 3
+
+oahu_pass2_mapped <- oahu_pass2_id %>% 
+  select(-google_coords) %>% 
+  mutate(
+    table_3_type = case_when(
+      # --- CHURCH ---
+      final_category %in% c("church","place_of_worship") ~ "church",
+      
+      # --- CEMETARY ---
+      final_category %in% c("cemetery", "cemetary") ~ "cemetary",
+      
+      # --- PARK ---
+      final_category %in% c("park", "campground") ~ "park",
+      
+      # --- SCHOOLS ---
+      # Defaulting to 'without gym' since the API doesn't specify structural facilities
+      final_category %in% c("school", "primary_school", "secondary_school") ~ "school - without gym",
+      final_category %in% c("university") ~ "school - with gym",
+      
+      # --- NON PROFIT --
+      # Defaulting without shower
+      final_category %in% c("local_government_office", "post_office","bus_station","library","transit_station", "museum","police") ~ "non-profit organization",
+      
+      final_category %in% c("embassy","fire_station") ~ "non-profit organization with showers",
+      
+      # --- BASEYARD ---
+      final_category %in% c("general_contractor", "roofing_contractor", 
+                            "storage", "car_repair", "hardware_store", "laundry") ~ "baseyard",
+      
+      # --- BUSINESS (Food, Retail, Offices, Medical) ---
+      final_category %in% c(
+        "restaurant", "food", "cafe", "meal_takeaway", "bakery", "bar",
+        "store", "grocery_or_supermarket", "supermarket", "convenience_store", 
+        "liquor_store", "clothing_store", "jewelry_store", "home_goods_store", "shopping_mall",
+        "real_estate_agency", "accounting", "finance", "bank", "atm", "travel_agency",
+        "health", "doctor", "dentist", "physiotherapist", "spa", "beauty_salon", "gym",
+        "lodging", "gas_station", "tourist_attraction", "art_gallery","airport","point_of_interest"
+      ) ~ "business",
+      
+      # --- CATCH-ALL FOR ERRORS / BLANKS ---
+      final_category == "error" ~ NA_character_,
+      is.na(final_category)     ~ NA_character_,
+      
+      # Safety line: anything missed gets flagged so your code doesn't crash
+      TRUE ~ "unclassified_check_me"
+    )
+  ) %>% 
+  mutate(table_3_type = ifelse(table_3_type == "unclassified_check_me","business",table_3_type)) %>% 
+  mutate(class_method = "google places coordiate search") %>%
+  rename(found_type = final_category) %>% 
+  mutate(table_3_type = case_when(
+    place_name %in% c("Manoa Falls Trail","Barbers Point Lighthouse","Ulupō Heiau State Historic Site","Hāwea heiau complex","East-West Center Japanese Garden","Diamond Head Lighthouse","The Clark Hatch Bark Park at Diamond Head","Hula Kahiko Dancer Statue & Pond") ~ "park",
+    place_name %in% c("Sunset Beach Christian Church","St Michael","Waialua Hongwanji Mission") ~ "church",
+    TRUE ~ table_3_type
+  ))
+
+oahu_pass2_mapped %>% 
+  filter(table_3_type == "unclassified_check_me") %>% 
+  pull(found_type) %>% 
+  unique()
+
+# Join pass 1 and 2 together, apply logic to prioritize when both show up
+
+oahu_identified_final <- oahu_pass2_mapped %>% 
+  select(tmk,lat,lon, place_name,table_3_type,class_method, found_type) %>% 
+  rbind(oahu_pass1_mapped_forjoin) %>% 
+  filter(!is.na(table_3_type))
+
+# tmk check 1 - are all the tmks in the OG table 4 present in this joined version?
+
+oahu_identified_final %>% filter(tmk %!in% oahu_table4$tmk) # nice!
+
+
+# de duplicate
+
+oahu_table4_deduplicated <- oahu_identified_final %>%
+  # Step 1: Create ordering scores for logic
+  mutate(
+    # Method rank: lower number = better reliability
+    method_rank = case_when(
+      class_method == "manual ID" ~ 1,
+      class_method == "google places coordiate search"    ~ 2,
+      TRUE                            ~ 3
+    ),
+    
+    # Category rank: lower number = more specific
+    category_rank = case_when(
+      # Specific Table 3 categories are the absolute best
+      table_3_type %in% c("school - without gym", "school - with gym", 
+                            "church", "cemetary", "park", "baseyard", "business", "non-profit organization") ~ 1,
+      
+      # Vague API results are second-best
+      table_3_type == "establishment" ~ 2,
+      
+      # Premise/Route/NA are the least useful
+      found_type %in% c("premise", "route", "street_address","error") ~ 3,
+      is.na(found_type) ~ 4,
+      
+      TRUE ~ 5
+    )
+  ) %>% 
+  # Step 2: Group by unique spatial keys
+  group_by(tmk, lat, lon) %>%
+  # Step 3: Sort the duplicates inside each group by ranks
+  # R will sort by method_rank first, and break ties using category_rank
+  arrange(method_rank, category_rank, .by_group = TRUE) %>%
+  # Step 4: Grab the #1 best row for each TMK combination
+  slice(1) %>%
+  # Step 5: Clean up by unlocking the dataframe and dropping temporary rank columns
+  ungroup() %>%
+  select(-method_rank, -category_rank)
+
+# Filter out residences and still missing
+
+oahu_still_missing <- oahu_table4 %>% 
+  filter(tmk %!in% oahu_table4_deduplicated$tmk)
+
+oahu_residences <- oahu_table4_deduplicated %>% 
+  filter(table_3_type == "residential")
+
+ohau_table4_final <- oahu_table4_deduplicated %>% 
+  filter(tmk %!in% oahu_still_missing$tmk) %>% 
+  filter(tmk %!in% oahu_residences$tmk)
+
+
+write_csv(ohau_table4_final,file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/table4_oahu_allentries.csv"))
+
+write_csv(oahu_still_missing,file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/oahu_still_unidentified.csv"))
+
+write_csv(oahu_residences,file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/oahu_residences_notInDwell.csv"))
+
+
+```
+
+#### Combine with Big Island + Effluent Ranges to create final table 4
+
+```{r}
+
+
+# read in our 3 tables 
+
+oahu_table4 <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/table4_oahu_allentries.csv")) %>% 
+  select(tmk, table_3_type)
+
+kauai_mauitable_4 <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/table4_kauaimaui_Final_allentries.csv")) %>% 
+  select(tmk, table_3_type)
+
+hi_table4 <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/hi_tables/table4_updated_draft.csv"))
+
+
+# how many hi have beds?
+
+hi_table4_withbeds <- hi_table4 %>% filter(data_presence == "Bedrooms Recorded") # about 1/4. We will keep them for now to be more consistent with the other states
+
+hi_types <- hi_table4_withbeds %>% pull(otp_commercial)
+  
+# map hi categories to the table 3 categories
+
+hi_table4_mapped <- hi_table4_withbeds %>% 
+  mutate(table_3_type = case_when(
+    otp_commercial %in% c("small business",
+                          "resturant") ~ "business",
+    str_detect(otp_commercial, "church") ~ "church",
+    str_detect(otp_commercial, "gov") | str_detect(otp_commercial, "non-profit") ~ "non-profit organization",
+    str_detect(otp_commercial, "park") ~ "park",
+    otp_commercial %in% c("small school, no gym","small school/no gym") ~ "school - without gym",
+    otp_commercial == "small school/w gym" ~ "school - with gym",
+    TRUE ~ NA
+  )) %>% 
+  select(tmk, table_3_type)
+  
+  
+  
+# bind all together and join to effluent calculations
+  
+table_4_allislands <- rbind(hi_table4_mapped,
+                            kauai_mauitable_4,
+                            oahu_table4) %>% 
+  rename(type = table_3_type) %>% 
+  filter(type %!in% c("unknown","unclassified_check_me")) %>% 
+  filter(!is.na(type)) %>% 
+  left_join(table_3_Oahu, by = "type")
+  
+# save final table
+
+write_csv(table_4_allislands, file.path(driver_dir,"4_OSDS_N_Runoff/output-data/final_tables/table4_identified_allislands.csv"))
+  
+```
 
