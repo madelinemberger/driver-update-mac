@@ -1,0 +1,144 @@
+---
+title: "Compile Final Database and Query"
+author: "Madeline Berger"
+date: "2026-07-02"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(here)
+library(janitor)
+source(here("workflow/setup.R"))
+
+
+
+```
+
+# Final Databse and Query
+
+This markdown contains code to assemble and clean the final compiled database. It also contains the development code for the effluent query.
+
+
+## Assemble Tables Into Final Dataabse
+
+Up until this point, I've worked on each dataset separately due to small differences in each islands' most recent dataset. 
+Here I will combine them so we have one database with 5 tables:
+
+-Table 1: Authoritative TMK List, Spatial Information, Analysis Flags
+-Table 2: Bedrooms per year
+-Table 3a: Permits applied per year
+-Table 3b: Cummulative OSDS status per year
+-Table 4: Non-residential OSDS
+
+```{r}
+
+
+# table1s
+
+oahu_1 <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/oahu_tables/table1_tmk_registry_all.csv"))
+maui_1 <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/maui_tables/table1_tmk_registry_all.csv"))
+kauai_1 <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/kauai_tables/table1_tmk_registry_all.csv"))
+
+hi_1 <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/hi_tables/table1_tmk_registry_ALL_draft.csv")) %>% select(-class_match_flag, -pitt_assignment,-min_year,-max_year,-scenario) %>% 
+  rename(permit_story = unique_story,bed_gapfill_flag = bedroom_data_source) %>% 
+  mutate(year_built_combined = 9999)
+
+# missing key column names for Hi
+
+final_table1_kmo <- rbind(oahu_1,
+                                 maui_1) %>% 
+  rbind(kauai_1) %>% 
+  select(-starts_with("use"), -n_buildings)
+  
+final_table1_allislands <-  rbind(hi_1,final_table1_kmo)
+
+# table 2
+oahu_2 <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/oahu_tables/table2a_bedrooms_sum.csv")) %>% 
+  mutate(`2021` = NA,
+         `2022` = NA,
+         `2023` = NA)
+
+# NOTE - we don't have most recent data for oahu
+maui_2 <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/maui_tables/table2a_bedrooms_sum.csv")) %>% 
+  select(-`2009`)
+
+kauai_2 <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/kauai_tables/table2a_bedrooms_sum.csv")) %>%
+  select(-`2009`,-`2024`,-`2025`)
+
+hi_2 <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/hi_tables/table2a_bedrooms_sum.csv")) %>% 
+  rename(tmk = full_taxid)
+
+final_table2_allislands <- rbind(oahu_2,
+                                 maui_2,
+                                 kauai_2,
+                                 hi_2)
+
+write_csv(final_table2_allislands,file.path(driver_dir,"4_OSDS_N_Runoff/output-data/final_tables/table2_allislands.csv"))
+
+# table 3s
+
+oahu_3a <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/oahu_tables/table3_class_all.csv")) %>% 
+  rename(tmk = full_taxid)
+names(oahu_3a)[-1] <- paste0("osds_class_",names(oahu_3a)[-1])
+
+
+
+
+maui_3a <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/maui_tables/table3a_permitsApplied_ALL.csv")) %>% 
+  select(-starts_with("new"))
+
+kauai_3a <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/kauai_tables/table3a_permitsApplied_ALL.csv")) %>% 
+  select(-starts_with("new"))
+
+hi_3a <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/hi_tables/table3_osdscl_ALL_draft.csv")) %>% 
+  select(-osds_cl_pre_2009)
+names(hi_3a)[-1] <- gsub("osds_cl_", "osds_class_", names(hi_3a)[-1])
+
+# removed years not present in oahu - 2009 and pre2009 
+final_table3a_allislands <- rbind(oahu_3a,
+                                  maui_3a,
+                                  kauai_3a,
+                                  hi_3a)
+write_csv(final_table3a_allislands,file.path(driver_dir,"4_OSDS_N_Runoff/output-data/final_tables/table3a_allislands.csv"))
+
+# 3b - need to change
+oahu_3b <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/oahu_tables/table3b_allyears_draft.csv")) 
+names(oahu_3b)[-1] <- gsub("osds_class_", "osds_present_", names(oahu_3b)[-1])
+names(oahu_3b)[-1] <- gsub("osds_cl_", "osds_present_", names(oahu_3b)[-1])
+
+maui_3b <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/maui_tables/table3b_allyears_draft.csv"))
+names(maui_3b)[-1] <- gsub("osds_cl_", "osds_present_", names(maui_3b)[-1])
+names(maui_3b)[-1] <- gsub("osds_class_", "osds_present_", names(maui_3b)[-1])
+
+kauai_3b <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/kauai_tables/table3b_allyears_draft.csv"))
+names(kauai_3b)[-1] <- gsub("osds_cl_", "osds_present_", names(kauai_3b)[-1])
+names(kauai_3b)[-1] <- gsub("osds_class_", "osds_present_", names(kauai_3b)[-1])
+
+hi_3b <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/hi_tables/table3b_allyears_draft.csv"))
+names(hi_3b)[-1] <- gsub("osds_cl_", "osds_present_", names(hi_3b)[-1])
+
+final_table3b_allislands <- rbind(oahu_3b,
+                                  maui_3b,
+                                  kauai_3b,
+                                  hi_3b)
+
+write_csv(final_table3b_allislands,file.path(driver_dir,"4_OSDS_N_Runoff/output-data/final_tables/table3b_allislands.csv"))
+
+# table 4s - this one has already been combined 
+
+
+
+```
+
+### Check to ensure Table 1 TMKS are accounted for. 
+
+```{r}
+
+
+
+
+```
+
+### 

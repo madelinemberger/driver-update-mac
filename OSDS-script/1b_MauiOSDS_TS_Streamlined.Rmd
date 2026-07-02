@@ -413,7 +413,7 @@ write_csv(table2b_bedrooms,
           file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/maui_tables/table2b_bedrooms_mode.csv"))
 
 write_csv(table3_classes,
-          file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/maui_tables/table3_class_allcsv"))
+          file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/maui_tables/table3_class_all.csv"))
 
 
 
