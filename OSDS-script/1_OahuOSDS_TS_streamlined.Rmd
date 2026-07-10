@@ -340,6 +340,13 @@ length(unique(oahu_dwells_all$tmk)) #how many? 11163
 
 length(unique(master_tmk_list)) #13873 <- so some of these are commercial or not in dwell
 
+# important: filter dwell data by authortative tmk to create "dwell" and "nondwell lists"
+
+oahu_dwells_osds <- oahu_dwells_all %>% 
+  filter(tmk %in% master_tmk_list) %>% 
+  pull(tmk) %>% 
+  unique() #11163
+
 ```
 
 ### Step 2: Bring in Permit Data (IWS, Dept. of Health)
@@ -358,6 +365,7 @@ iws_oahu_permits <- iws_permit_data %>%
   mutate(tmk = as.character(tmk))
 
 tmks_permits <- unique(iws_oahu_permits$tmk) #1412
+
 
 # execute join to see which tmks have dwell data
 
@@ -564,7 +572,7 @@ write_csv(table3_classes,
 
 ```{r}
 
-# first read in the dwelling data for all kauai
+# first read in the dwelling data for all oahu
 
 oahu_dwell_alltmks <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/dwellings/oahu_dwell_clean_alltmks.csv")) %>% 
   mutate(tmk = as.character(tmk))
@@ -741,6 +749,8 @@ write_csv(oahu_otp_unchanged_table1,
 
 write_csv(oahu_otp_unchanged_table2,
           file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/oahu_tables/table2_classes_UNCHANGED.csv"))
+
+oahu_unchanged_dwell <- read_csv( file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/oahu_tables/table2_classes_UNCHANGED.csv"))
 
 write_csv(oahu_otp_unchanged_table3,
           file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/oahu_tables/table3_classes_UNCHANGED.csv"))
@@ -994,7 +1004,7 @@ table_2_new_only <- table_2_new %>%
   filter(tmk %!in% table_2_updatedforbind$tmk)
 
 table_2_complete <- bind_rows(table_2_unchanged, table_2_updatedforbind, table_2_new_only) %>% 
-  distinct()#2000 ish commerical?
+  distinct() #2000 ish commerical?
 
 year_built <- oahu_dwell_alltmks %>% 
   filter(tmk %in% table_2_complete$tmk) %>% 
@@ -1210,7 +1220,7 @@ write_csv(table_3b_wide,
 
 ```
 
-## Step 5: Get Data for Non-Dwells, Google places
+## Step 5: Get Data for Non-Dwells, Google places - MOVED TO SEPARTE NOTEBOOK
 
 ```{r}
 

@@ -682,7 +682,7 @@ represents:
     
 The `osds_class` column also does not have any 4s, just 1-3, and -9999. I'll use the same additive coding here as I did with Maui Nui, Kauai (and eventually Oahu): 
 
-### Wastewater Class Encoding Reference Table
+#### Wastewater Class Encoding Reference Table
 
 | Detected Classes | Encoded Sum | Description |
 | :--- | :---: | :--- |

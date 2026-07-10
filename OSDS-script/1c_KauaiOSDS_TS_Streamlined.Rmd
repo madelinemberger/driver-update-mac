@@ -111,6 +111,14 @@ length(unique(kauai_dwell_tmks_forjoin$tmk)) # tmk = 18966, cool
 
 write_csv(kauai_dwell_allentries,
           file.path(driver_dir,"4_OSDS_N_Runoff/output-data/dwellings/kauai_dwell_clean_alltmks.csv"))
+
+kauai_dwell_allentries <- read_csv(file.path(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/dwellings/kauai_dwell_clean_alltmks.csv")))
+
+kauai_dwell_osds <- kauai_dwell_allentries %>% filter(tmk %in% master_tmk_list) %>% 
+  pull(tmk) %>% 
+  unique() #13385
+
+
 ```
 
 

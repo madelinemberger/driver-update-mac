@@ -159,6 +159,12 @@ maui_dwell_alltmks <- maui_dwell_allentries %>%
 
 write_csv(maui_dwell_alltmks,
           file.path(driver_dir,"4_OSDS_N_Runoff/output-data/dwellings/maui_dwell_clean_alltmks.csv"))
+
+# check how many we should have
+maui_dwell_alltmks <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/dwellings/maui_dwell_clean_alltmks.csv"))
+
+length(unique(maui_dwell_alltmks$tax_id)) #14402
+
 ```
 
 

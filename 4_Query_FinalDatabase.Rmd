@@ -12,8 +12,6 @@ library(here)
 library(janitor)
 source(here("workflow/setup.R"))
 
-
-
 ```
 
 # Final Databse and Query
@@ -55,20 +53,17 @@ final_table1_kmo <- rbind(oahu_1,
 final_table1_allislands <-  rbind(hi_1,final_table1_kmo)
 
 # table 2
-oahu_2 <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/oahu_tables/table2a_bedrooms_sum.csv")) %>% 
+oahu_2 <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/oahu_tables/table2_bedrooms_ALL.csv")) %>% 
   mutate(`2021` = NA,
          `2022` = NA,
          `2023` = NA)
 
 # NOTE - we don't have most recent data for oahu
-maui_2 <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/maui_tables/table2a_bedrooms_sum.csv")) %>% 
-  select(-`2009`)
+maui_2 <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/maui_tables/table2_bedrooms_ALL.csv"))
 
-kauai_2 <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/kauai_tables/table2a_bedrooms_sum.csv")) %>%
-  select(-`2009`,-`2024`,-`2025`)
+kauai_2 <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/kauai_tables/table2_bedrooms_ALL.csv"))
 
-hi_2 <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/hi_tables/table2a_bedrooms_sum.csv")) %>% 
-  rename(tmk = full_taxid)
+hi_2 <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/hi_tables/table2_bedrooms_ALL_draft.csv"))
 
 final_table2_allislands <- rbind(oahu_2,
                                  maui_2,
@@ -136,9 +131,52 @@ write_csv(final_table3b_allislands,file.path(driver_dir,"4_OSDS_N_Runoff/output-
 
 ```{r}
 
+table_1_tmks_all <- final_table1_allislands$tmk
 
+# are all of table 2 tmks in table 1?
+
+all(final_table2_allislands$tmk %in% table_1_tmks_all) # TRUE
+
+# do table 2 and table 3b tmks match?
+
+setequal(final_table2_allislands$tmk, final_table3b_allislands$tmk) # FALSE, because some of these are commercial
+
+# Elements in Table 2 but missing from Table 3b - this one should be 0 
+setdiff(final_table2_allislands$tmk, final_table3b_allislands$tmk)
+
+# Elements in Table 3b but missing from Table 2 - this one will have table 4 classes
+length(setdiff(final_table3b_allislands$tmk, final_table2_allislands$tmk)) #89488. Way too many
+
+# are all of table 3b tmks in table 1?
+
+all(final_table3b_allislands$tmk %in% table_1_tmks_all) # TRUE
+
+
+# are all table 4 tms in table 1?
+
+final_table4 <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/final_tables/table4_identified_allislands.csv"))
+
+all(final_table4$tmk %in% table_1_tmks_all) # TRUE
+
+# are the remaining unaccounted table 1s all accounted for in our "missing info" group?
+
+# identify tmks in table one that so far have not shown up in table 4 or 3b
+
+accounted_tmks <- unique(c(final_table4$tmk, final_table2_allislands$tmk))
+unaccounted_table1_tmks <- setdiff(table_1_tmks_all, accounted_tmks) # 88229
+
+# compare with dfs of missing info - these will either be missing spatial info OR missing variable info 
+
+still_missing_spatial <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/final_tables/table1_tmk_registry_withOUTSpatial.csv"))
+
+still_missing_identifiers 
 
 
 ```
+
+From this, I can see that we need to:
+1) review table 2
+2) review table 3a
+3) confirm and collect all missing data
 
 ### 

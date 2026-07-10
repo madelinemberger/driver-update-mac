@@ -1322,6 +1322,12 @@ table_4_allislands <- rbind(hi_table4_mapped,
   filter(!is.na(type)) %>% 
   left_join(table_3_Oahu, by = "type")
   
+
+still_missing <- table_4_allislands <- rbind(hi_table4_mapped,
+                            kauai_mauitable_4,
+                            oahu_table4) %>% 
+  rename(type = table_3_type) %>% 
+  filter(type %in% c("unknown","unclassified_check_me")) # 69
 # save final table
 
 write_csv(table_4_allislands, file.path(driver_dir,"4_OSDS_N_Runoff/output-data/final_tables/table4_identified_allislands.csv"))
