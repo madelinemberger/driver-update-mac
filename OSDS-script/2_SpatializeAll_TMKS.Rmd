@@ -322,13 +322,13 @@ table_1_forChris <- table_1_all_raw %>%
 
 any(duplicated(table_1_forChris$tmk))
 
-duplicated_tmks <- table_1_all_forChris %>%
-  group_by(tmk) %>%
-  filter(n() > 1) %>%
-  arrange(tmk)
+# duplicated_tmks <- table_1_all_forChris %>%
+#   group_by(tmk) %>%
+#   filter(n() > 1) %>%
+#   arrange(tmk)
 
 st_write(table_1_forChris,
-         dsn = file.path(here("data/osds/shared-data/to_ChrisShuler/table1_simple_07_15_2026.csv")))
+         dsn = file.path(here("data/osds/shared-data/to_ChrisShuler/table1_simple_07_15_2026.shp")))
 ```
 
 
