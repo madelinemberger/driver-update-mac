@@ -290,8 +290,45 @@ st_write(still_missing,
          delete_dsn = T)
 
 
-### Last Step: Flow Lines. These donʻt have years? Question for Kim and Joey 
+### Last Step: Flow Lines. We can think about how to categorize these later
 
+
+## read these back in, join but with spatial missing flag
+
+osds_with_spatial <-  st_read(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/final_tables/table1_tmk_registry_withSpatial.shp"))
+
+osds_without_spatial <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/final_tables/table1_tmk_registry_withOUTSpatial.csv"))
+
+mapview(osds_with_spatial, zcol = "HUC12")
+
+osds_with_spatial_simple <- osds_with_spatial %>% 
+  mutate(spatial_info = ifelse(st_is_empty(geometry),FALSE, TRUE)) %>% 
+  select(tmk, status_since_otp = 7, spatial_info)
+
+osds_without_spatial_simple <- osds_without_spatial %>% 
+  mutate(spatial_info = FALSE) %>% 
+  select(tmk, status_since_otp, spatial_info) %>%
+  mutate(geometry = st_sfc(lapply(1:n(), function(x) st_geometrycollection()), 
+                           crs = st_crs(osds_with_spatial))) %>% 
+  st_as_sf() %>% 
+  filter(tmk %!in% osds_with_spatial_simple$tmk)
+
+
+table_1_all_raw <- rbind(osds_with_spatial_simple, osds_without_spatial_simple)
+
+table_1_forChris <- table_1_all_raw %>% 
+  arrange(tmk, desc(spatial_info)) %>% 
+  distinct(tmk, .keep_all = TRUE)
+
+any(duplicated(table_1_forChris$tmk))
+
+duplicated_tmks <- table_1_all_forChris %>%
+  group_by(tmk) %>%
+  filter(n() > 1) %>%
+  arrange(tmk)
+
+st_write(table_1_forChris,
+         dsn = file.path(here("data/osds/shared-data/to_ChrisShuler/table1_simple_07_15_2026.csv")))
 ```
 
 
