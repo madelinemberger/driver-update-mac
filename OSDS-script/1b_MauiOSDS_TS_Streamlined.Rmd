@@ -76,7 +76,7 @@ new_tmks <- maui_new %>% pull(tmk) %>% unique() #659
 
 maui_master_tmk_list <- c(iws_maui_permits_tmk,otp_maui_tmk)
 
-maui_master_tmk_list <- unique(master_tmk_list) # 15090
+maui_master_tmk_list <- unique(maui_master_tmk_list) # 15090
 
 
 ```
@@ -197,7 +197,7 @@ iws_maui_NOdwell <- iws_maui_permits %>%
   filter(tmk %!in% iws_maui_dwell_join$tmk) # 191 rows, #139 tmks
 
 write_csv(iws_maui_NOdwell,
-         file.path(driver_dir,"4_OSDS_N_Runoff/intermediate/step3/maui_iwspermits_nodwellinginfo.csv"))
+         file.path(driver_dir,"4_OSDS_N_Runoff/intermediate/step2-clean-permit-data/maui_iwspermits_nodwellinginfo.csv"))
 
 ```
 
@@ -247,7 +247,7 @@ represents:
 | **Class 2 + 3 + 4** | 14 | Classes 2, 3, and 4 |
 | **All (1, 2, 3, 4)** | 15 | Full suite of permits |
 
-```{r}
+```{r new-tables}
 
 library(janitor)
 # custom functions
@@ -425,7 +425,7 @@ write_csv(table3_classes,
 
 In this step we have to add in the old data, but differentiate between data that has been updated, unchanged. We also have to gapfill the bedroom and class data, because the old data is just a shot in time. 
 
-#### Unchanged
+#### Records Unchanged Since OTP
 
 These have no new permit data. But, it would be nice to get a better understanding of their bedroom # over time. We have to make one assumption in order to merge our dwell data with this older data. 
 
@@ -437,7 +437,175 @@ We'll save these ALONE just as the unchanged tmks
 
 We also use pittcode here to help us filter stuff out
 
-```{r unchanged}
+
+```{r unchaged}
+
+library(tidyverse)
+
+'%!in%' <- Negate('%in%')
+
+maui_unchanged <- maui_unchanged %>% 
+  mutate(
+    tmk = sprintf("%.0f", as.numeric(tmk)),
+    tmk = str_pad(tmk, width = 9, side = "left", pad = "0")
+  )
+
+maui_dwell_alltmks <- read_csv(
+  file.path(driver_dir, "4_OSDS_N_Runoff/intermediate/step1-clean-dwelling-records/maui_dwell_clean_alltmks.csv"),
+  col_types = cols(tmk = col_character())
+) %>% 
+  mutate(
+    tmk = sprintf("%.0f", as.numeric(tmk)),
+    tmk = str_pad(tmk, width = 9, side = "left", pad = "0")
+  )
+
+# 2. Encode Classes
+maui_unchanged_encoded <- maui_unchanged %>% 
+  pivot_longer(
+    cols = starts_with("class"),
+    names_to = "class",
+    values_to = "quantity"
+  ) %>% 
+  filter(!is.na(quantity) & quantity != 0 & quantity != -9999) %>% 
+  rename(ttl_osds_2010 = any_of(c("osds_qty", "ttl_osds"))) %>%
+  mutate(osds_class_otp = case_when(
+    class == "class_iv"  ~ 8, # cesspool 
+    class == "class_iii" ~ 4,
+    class == "class_ii"  ~ 2,
+    class == "class_i"   ~ 1,
+    TRUE                 ~ NA_real_
+  )) %>%
+  pivot_wider(
+    id_cols = c("tmk", "ttl_osds_2010", any_of(c("pittcode", "pitt_code"))), 
+    names_from = "class", 
+    values_from = "osds_class_otp"
+  ) %>% 
+  mutate(encoded_sum = rowSums(across(starts_with("class")), na.rm = TRUE))
+
+# 3. Join to Dwelling Records
+maui_unchgd_encoded_dwell <- left_join(maui_unchanged_encoded, maui_dwell_alltmks, by = "tmk") %>% 
+  distinct()
+
+# --- Table 1: TMK Registry ---
+maui_card_dwell_summary <- maui_unchgd_encoded_dwell %>% 
+  group_by(tmk) %>% 
+  summarize(
+    n_buildings = if ("card" %in% names(.)) n_distinct(card, na.rm = TRUE) else 1,
+    in_dwelldat = any(!is.na(tax_year)),
+    .groups = "drop"
+  )
+
+maui_otp_unchanged_table1 <- maui_unchgd_encoded_dwell %>%
+  mutate(
+    n_permits = case_when(
+      encoded_sum %in% c(1, 2, 4, 8)               ~ 1,
+      encoded_sum %in% c(3, 5, 6, 9, 10, 12)       ~ 2,
+      encoded_sum %in% c(7, 11, 13, 14)            ~ 3,
+      encoded_sum == 15                            ~ 4,
+      TRUE                                         ~ 99999
+    ),
+    n_years = 1,
+    min_year = 2010,
+    max_year = 2010,
+    n_addresses = "unknown",
+    status_since_otp = "unchanged since otp",
+    scenario = case_when(
+      n_permits == 1 & n_years == 1 ~ "Simple",
+      n_addresses == "unknown"      ~ "Unknown",
+      n_years > 1                   ~ "Potential Upgrade",
+      TRUE                          ~ "Multiple Permits Same Year"
+    )
+  ) %>% 
+  left_join(maui_card_dwell_summary, by = "tmk") %>% 
+  select(
+    tmk,
+    starts_with("n_"),
+    min_year,
+    max_year,
+    in_dwelldat,
+    status_since_otp,
+    scenario,
+    n_buildings
+  ) %>% 
+  distinct(tmk, .keep_all = TRUE)
+
+# --- Table 2: Bedrooms ---
+maui_otp_unchanged_table2 <- maui_unchgd_encoded_dwell %>%
+  filter(!is.na(tax_year)) %>% 
+  mutate(bed_rooms = as.numeric(bed_rooms)) %>% 
+  group_by(tmk, tax_year) %>% 
+  summarize(total_beds = sum(bed_rooms, na.rm = TRUE), .groups = "drop") %>% 
+  pivot_wider(
+    id_cols = tmk,
+    names_from = tax_year, 
+    values_from = total_beds, 
+    names_sort = TRUE
+  ) %>% 
+  select(tmk, matches("^[0-9]{4}")) %>% 
+  rename_with(~ paste0("bedrooms_", .x), matches("^[0-9]{4}"))
+
+# --- Table 3: OSDS Class Baseline ---
+maui_otp_unchanged_table3 <- maui_unchgd_encoded_dwell %>% 
+  mutate(year = 2010) %>% 
+  select(tmk, year, encoded_sum) %>% 
+  distinct() %>% 
+  pivot_wider(
+    id_cols = tmk,
+    names_from = year, 
+    values_from = encoded_sum,
+    names_prefix = "osds_class_" # Standardized prefix matching Oahu
+  )
+
+# --- Table 4: Commercial Classification ---
+maui_otp_unchanged_table4 <- maui_unchanged %>% 
+  select(tmk, any_of(c("commercial", "pittcode", "pitt_code", "x", "y"))) %>% 
+  rename(pitt_code = any_of(c("pittcode", "pitt_code"))) %>% 
+  filter(!is.na(commercial) | !is.na(pitt_code)) %>%
+  mutate(comm_assignment = case_when(
+    pitt_code == 0                                ~ "Timeshare (Maui only)",
+    pitt_code == 999                              ~ "Multiple PITT Codes",
+    pitt_code >= 1000                             ~ "Commercialized Residential (Maui only)",
+    pitt_code >= 100 & pitt_code < 200            ~ "Improved Residential",
+    pitt_code >= 200 & pitt_code < 300            ~ "Apartment",
+    pitt_code >= 300 & pitt_code < 400            ~ "Commercial",
+    pitt_code >= 400 & pitt_code < 500            ~ "Industrial",
+    pitt_code >= 500 & pitt_code < 600            ~ "Agricultural and Rural",
+    pitt_code >= 600 & pitt_code < 700            ~ "Conservation",
+    pitt_code >= 700 & pitt_code < 800            ~ "Hotel and Resort",
+    pitt_code >= 800 & pitt_code < 900            ~ "Unimproved Residential",
+    pitt_code >= 900 & pitt_code < 999            ~ "Homeowner",
+    TRUE                                          ~ "Unknown"
+  )) %>% 
+  distinct(tmk, .keep_all = TRUE)
+
+# ==============================================================================
+# EXPORT INTERMEDIATE UNCHANGED FILES
+# ==============================================================================
+
+write_csv(
+  maui_otp_unchanged_table1,
+  file.path(driver_dir, "4_OSDS_N_Runoff/intermediate/step3/maui_table1_tmk_registry_UNCHANGED.csv")
+)
+
+write_csv(
+  maui_otp_unchanged_table2,
+  file.path(driver_dir, "4_OSDS_N_Runoff/intermediate/step3/maui_table2_bedrooms_UNCHANGED.csv")
+)
+
+write_csv(
+  maui_otp_unchanged_table3,
+  file.path(driver_dir, "4_OSDS_N_Runoff/intermediate/step3/maui_table3_classes_UNCHANGED.csv")
+)
+
+write_csv(
+  maui_otp_unchanged_table4,
+  file.path(driver_dir, "4_OSDS_N_Runoff/intermediate/step3/maui_table4_commercial_UNCHANGED_draft.csv")
+)
+
+```
+
+##### Delete
+```{r unchanged-old}
 
 # first read in the dwelling data for all maui
 
@@ -603,6 +771,291 @@ These ones are present in OTP but also in the new data.
 
 ```{r updated}
 
+library(tidyverse)
+
+# ==============================================================================
+# 1. BEDROOM GAP-FILL LOGIC (MAUI)
+# ==============================================================================
+
+# Read step 2 new bedrooms sum and standardize TMK
+table_2_new <- read_csv(
+  file.path(driver_dir, "4_OSDS_N_Runoff/intermediate/step2-clean-permit-data/maui_table2a_newbedrooms_sum.csv"),
+  col_types = cols(tmk = col_character())
+) %>% 
+  mutate(
+    tmk = sprintf("%.0f", as.numeric(tmk)),
+    tmk = str_pad(tmk, width = 9, side = "left", pad = "0")
+  ) %>% 
+  rename_with(~ paste0("newbeds", .x), !tmk)
+
+maui_updated_forjoin <- maui_updated %>% 
+  mutate(
+    tmk = sprintf("%.0f", as.numeric(tmk)),
+    tmk = str_pad(tmk, width = 9, side = "left", pad = "0")
+  ) %>% 
+  select(tmk, any_of(c("pittcode", "pitt_code")), commercial, ttl_bdrms) %>% 
+  rename(
+    otp_ttl_bdrms = ttl_bdrms,
+    pitt_code = any_of(c("pittcode", "pitt_code"))
+  ) %>% 
+  mutate(comm_assignment = case_when(
+    pitt_code == 0                                ~ "Timeshare (Maui only)",
+    pitt_code == 999                              ~ "Multiple PITT Codes",
+    pitt_code >= 1000                             ~ "Commercialized Residential (Maui only)",
+    pitt_code >= 100 & pitt_code < 200            ~ "Improved Residential",
+    pitt_code >= 200 & pitt_code < 300            ~ "Apartment",
+    pitt_code >= 300 & pitt_code < 400            ~ "Commercial",
+    pitt_code >= 400 & pitt_code < 500            ~ "Industrial",
+    pitt_code >= 500 & pitt_code < 600            ~ "Agricultural and Rural",
+    pitt_code >= 600 & pitt_code < 700            ~ "Conservation",
+    pitt_code >= 700 & pitt_code < 800            ~ "Hotel and Resort",
+    pitt_code >= 800 & pitt_code < 900            ~ "Unimproved Residential",
+    pitt_code >= 900 & pitt_code < 999            ~ "Homeowner",
+    TRUE                                          ~ "Unknown"
+  ))
+
+table_2_updated <- table_2_new %>% 
+  filter(tmk %in% maui_updated_forjoin$tmk)
+
+updates_notInTable2 <- setdiff(maui_updated_forjoin$tmk, table_2_updated$tmk)
+
+table4_withUpdates <- maui_updated_forjoin %>% 
+  filter(tmk %in% updates_notInTable2) 
+
+maui_otp_updated_withNewbeds <- maui_updated_forjoin %>% 
+  left_join(table_2_updated, by = "tmk") %>% 
+  filter(otp_ttl_bdrms != 0) 
+
+year_cols <- maui_otp_updated_withNewbeds %>% select(starts_with("newbeds")) %>% names()
+latest_bed_col <- if (length(year_cols) > 0) tail(year_cols, 1) else NULL
+
+maui_otp_updaed_withBedFlags <- maui_otp_updated_withNewbeds %>% 
+  mutate(
+    match_index = {
+      match_matrix <- pick(all_of(year_cols)) == otp_ttl_bdrms
+      match_matrix[is.na(match_matrix)] <- FALSE 
+      if_else(rowSums(match_matrix) > 0, max.col(match_matrix, ties.method = "first"), NA_integer_)
+    },
+    match_name = year_cols[match_index],
+    
+    # Safely evaluate dynamic latest year (replaces hardcoded newbeds2023)
+    latest_val = if (!is.null(latest_bed_col)) .data[[latest_bed_col]] else NA_real_,
+    bed_trend = case_when(
+      is.na(latest_val)             ~ NA_character_,
+      otp_ttl_bdrms < latest_val    ~ "Expansion since OTP",
+      otp_ttl_bdrms > latest_val    ~ "Shrink - double check",
+      otp_ttl_bdrms == latest_val   ~ "Perfect Match",
+      TRUE                          ~ NA_character_
+    ),
+
+    data_presence = if_else(
+      if_all(starts_with("newbeds"), ~ .x == 0 | is.na(.x)),
+      "Empty (All 0 or NA)",
+      "Bedrooms Recorded"
+    )
+  )
+
+# Get combined build years
+year_built <- maui_dwell_alltmks %>% 
+  filter(tmk %in% maui_otp_updaed_withBedFlags$tmk) %>% 
+  select(tmk, year_built) %>%
+  filter(!is.na(year_built)) %>% 
+  distinct() %>% 
+  group_by(tmk) %>%
+  summarize(
+    year_built_combined = str_flatten(as.character(year_built), collapse = ", "),
+    count_buildyears = n(),
+    .groups = "drop"
+  ) %>% 
+  mutate(
+    tmk = sprintf("%.0f", as.numeric(tmk)),
+    tmk = str_pad(tmk, width = 9, side = "left", pad = "0")
+  )
+
+maui_updated_with_BEDflags_gapfilled <- maui_otp_updaed_withBedFlags %>% 
+  left_join(year_built, by = "tmk") %>%
+  mutate(
+    gapfill_flag = if_else(
+      data_presence == "Empty (All 0 or NA)" & otp_ttl_bdrms > 0, 
+      "Gapfilled with OTP value", 
+      "Used dwell data"
+    )
+  ) %>%
+  mutate(across(starts_with("newbeds"), ~ {
+    fill_condition <- data_presence == "Empty (All 0 or NA)" & otp_ttl_bdrms > 0
+    if_else(fill_condition, as.numeric(otp_ttl_bdrms), as.numeric(.x))
+  })) %>%
+  mutate(across(starts_with("newbeds"), ~ {
+    col_year <- as.numeric(str_extract(cur_column(), "\\d{4}"))
+    min_build_yr <- as.numeric(str_extract(year_built_combined, "^\\d{4}"))
+    
+    case_when(
+      gapfill_flag == "Used dwell data" ~ as.numeric(.x),
+      is.na(min_build_yr) | min_build_yr <= 2010 ~ as.numeric(.x),
+      min_build_yr > col_year ~ NA_real_,
+      TRUE ~ as.numeric(.x)
+    )
+  }))
+
+table_2_updatedGapfilled <- maui_updated_with_BEDflags_gapfilled %>% 
+  select(tmk, starts_with("newbeds"))
+
+bedFlags_forTable1 <- maui_updated_with_BEDflags_gapfilled %>% 
+  select(
+    tmk,
+    bed_trend,
+    data_presence,
+    year_built_combined,
+    count_buildyears,
+    gapfill_flag
+  )
+
+
+# ==============================================================================
+# 2. OSDS CLASS GAP-FILL & UPGRADE LOGIC (MAUI)
+# ==============================================================================
+
+table_3_new <- read_csv(
+  file.path(driver_dir, "4_OSDS_N_Runoff/intermediate/step2-clean-permit-data/maui_table3_newclass_all.csv"),
+  col_types = cols(.default = "c")
+) %>% 
+  mutate(
+    tmk = if ("full_taxid" %in% names(.)) full_taxid else tmk,
+    tmk = sprintf("%.0f", as.numeric(tmk)),
+    tmk = str_pad(tmk, width = 9, side = "left", pad = "0")
+  ) %>% 
+  select(-any_of("full_taxid")) %>% 
+  rename_with(~ paste0("newclass", .x), !tmk)
+
+maui_updated_withClass_enc <- maui_updated %>% 
+  mutate(
+    tmk = sprintf("%.0f", as.numeric(tmk)),
+    tmk = str_pad(tmk, width = 9, side = "left", pad = "0")
+  ) %>% 
+  select(tmk, osds_qty, starts_with("class")) %>%
+  select(-any_of(c("class"))) %>% 
+  pivot_longer(cols = starts_with("class"), names_to = "class", values_to = "quantity") %>% 
+  filter(!is.na(quantity) & quantity != 0 & quantity != -9999) %>% 
+  rename(ttl_osds_2010 = osds_qty) %>% 
+  mutate(osds_class_otp = case_when(
+    class == "class_iv"  ~ 8, # cesspool 
+    class == "class_iii" ~ 4,
+    class == "class_ii"  ~ 2,
+    class == "class_i"   ~ 1,
+    TRUE                 ~ NA_real_
+  )) %>%
+  pivot_wider(
+    id_cols = c("tmk", "ttl_osds_2010"), 
+    names_from = "class", 
+    values_from = "osds_class_otp"
+  ) %>%
+  mutate(otp_encoded_sum = rowSums(across(starts_with("class")), na.rm = TRUE))
+
+maui_updated_withClassEnc_New <- maui_updated_withClass_enc %>%
+  left_join(table_3_new, by = "tmk")
+
+class_cols <- maui_updated_withClassEnc_New %>% select(starts_with("newclass")) %>% names()
+
+table3_updated_classmatch <- maui_updated_withClassEnc_New %>% 
+  mutate(
+    match_index = {
+      match_matrix <- pick(all_of(class_cols)) == otp_encoded_sum
+      match_matrix[is.na(match_matrix)] <- FALSE 
+      if_else(rowSums(match_matrix) > 0, max.col(match_matrix, ties.method = "first"), NA_integer_)
+    },
+    match_name = class_cols[match_index],
+    data_presence = if_else(
+      if_all(starts_with("newclass"), ~ .x == "0" | is.na(.x) | .x == 0),
+      "Empty (All 0 or NA)",
+      "OSDS Permit Recorded"
+    )
+  )
+
+table_1_new <- read_csv(
+  file.path(driver_dir, "4_OSDS_N_Runoff/output-data/int/maui_tables/table1_tmk_registry_all.csv"),
+  col_types = cols(.default = "c")
+) %>% 
+  mutate(
+    tmk = if ("full_taxid" %in% names(.)) full_taxid else tmk,
+    tmk = sprintf("%.0f", as.numeric(tmk)),
+    tmk = str_pad(tmk, width = 9, side = "left", pad = "0")
+  )
+
+update_logic_df <- table3_updated_classmatch %>% 
+  left_join(table_1_new, by = "tmk") %>% 
+  select(
+    tmk, otp_encoded_sum, 
+    any_of(c("min_year", "max_year", "n_addresses")), 
+    starts_with("newclass")
+  ) %>% 
+  mutate(
+    legacy_val = as.numeric(otp_encoded_sum),
+    v2009 = if ("newclass2009" %in% names(.)) as.numeric(newclass2009) else NA_real_,
+    v2010 = if ("newclass2010" %in% names(.)) as.numeric(newclass2010) else NA_real_,
+    scenario_match_flag = case_when(
+      legacy_val == v2009 | legacy_val == v2010 ~ "matched 2009 or 2010",
+      is.na(v2009) & is.na(v2010)                 ~ "no data to compare",
+      TRUE                                       ~ "unmatched"
+    )
+  )
+
+update_logic_refined_cl <- update_logic_df %>% 
+  mutate(newpre_2009 = as.character(case_when(
+    scenario_match_flag == "matched 2009 or 2010"               ~ NA_real_,
+    scenario_match_flag %in% c("unmatched", "no data to compare") ~ legacy_val,
+    TRUE                                                        ~ NA_real_
+  ))) %>% 
+  select(
+    tmk, newpre_2009, 
+    starts_with("newclass200"), starts_with("newclass201"), starts_with("newclass202"), 
+    everything()
+  ) %>% 
+  rowwise() %>% 
+  mutate(unique_story = {
+    # Fix: select strictly pre2009 and permit class columns to build story string
+    vals <- c_across(c(newpre_2009, starts_with("newclass")))
+    vals <- vals[!is.na(vals) & vals != "" & vals != "NA"]
+    paste(unique(vals), collapse = "|")
+  }) %>% 
+  ungroup() %>% 
+  mutate(
+    upgrade_scenario = case_when(
+      unique_story == "9|1|8"  ~ "cesspool and septic - both repaired, no change",
+      unique_story == "10|2|9" ~ "cesspool and septic 2 - septic repaired twice, cesspool once",
+      unique_story == "7|9|1"  ~ "potential data error: cesspool added, then possibly updated",
+      unique_story == "4|2"    ~ "septic and aerobic - replacement of aerobic",
+      unique_story == "3|4"    ~ "septic combo to aerobic",
+      unique_story == "1|4"    ~ "single septic to aerobic",
+      unique_story == "7|4"    ~ "complex septic system to aerobic",
+      unique_story == "8|5"    ~ "cesspool to septic / aerobic hybrid",
+      
+      unique_story == "" | !str_detect(unique_story, "\\|") ~ "no upgrade detected",
+      str_detect(unique_story, "^8\\|.*[1234]$")           ~ "single cesspool upgraded to septic or aerobic",
+      str_detect(unique_story, "^3\\|.*[12]$")             ~ "multiple septic with new permit: possible repair",
+      str_detect(unique_story, "^[24]\\|.*1$")             ~ "septic or aerobic system refined to cleanest type (Class 1)",
+      str_detect(unique_story, "^(9|1[0-5])\\|.*[1234]$")  ~ "multiple osds with cesspool upgraded",
+      str_detect(unique_story, "^(9|1[0-5])\\|.*8$")       ~ "multiple osds with new cesspool application",
+      
+      str_detect(unique_story, "^[1-7]\\|.*(8|9|1[0-5])$")  ~ "potential data error: backslide to cesspool",
+      str_detect(unique_story, "^[123]\\|.*[123]$")        ~ "lateral change (clean to clean)",
+      
+      TRUE ~ "other scenario"
+    )
+  )
+
+table_3_updated_new <- update_logic_refined_cl %>% 
+  select(tmk, newpre_2009, starts_with("newclass"))
+
+class_flag_forTable1 <- update_logic_refined_cl %>% 
+  select(tmk, class_match_flag = scenario_match_flag, unique_story, upgrade_scenario)
+
+```
+
+
+##### Delete
+
+```{r updated-old}
+
 
 # ---------- gap fill bed rooms --------------- #
 # read in the og table 2 with new info from step 2
@@ -760,9 +1213,7 @@ table_2_updatedGapfilled <- maui_updated_with_BEDflags_gapfilled %>%
 
 bedFlags_forTable1 <- maui_updated_with_BEDflags_gapfilled %>% 
   select(tmk,
-         bed_trend,
          data_presence,
-         year_built_combined,
          count_buildyears,
          gapfill_flag)
 
@@ -914,7 +1365,234 @@ class_flag_forTable1 <- update_logic_refined_cl %>%
 
 #### Complete Tables 1 - 3a, 4
 
-``` {r complete-tables }
+
+```{r complete-tables}
+library(tidyverse)
+
+'%!in%' <- Negate('%in%')
+
+# helper function to guarantee 9-digit Maui TMKs starting with '2'
+clean_maui_tmk <- function(df, col_name = "tmk") {
+  df %>% 
+    mutate(
+      !!sym(col_name) := sprintf("%.0f", as.numeric(!!sym(col_name))),
+      !!sym(col_name) := str_pad(!!sym(col_name), width = 9, side = "left", pad = "0")
+    )
+}
+
+
+# ---- Table 1 --------------
+table_1_new <- read_csv(
+  file.path(driver_dir, "4_OSDS_N_Runoff/output-data/int/maui_tables/table1_tmk_registry_all.csv"),
+  col_types = cols(.default = "c")
+) %>% 
+  mutate(tmk = if ("full_taxid" %in% names(.)) full_taxid else tmk) %>% 
+  clean_maui_tmk("tmk") %>% 
+  rename(in_dwelldat = any_of(c("is_dwelling", "in_dwelldat"))) %>% 
+  mutate(
+    status_since_otp = "New Permit",
+    n_addresses = as.character(n_addresses)
+  ) %>% 
+  select(-any_of("full_taxid")) %>% 
+  distinct(tmk, .keep_all = TRUE)
+
+table_1_unchanged <- read_csv(
+  file.path(driver_dir, "4_OSDS_N_Runoff/intermediate/step3/maui_table1_tmk_registry_UNCHANGED.csv"),
+  col_types = cols(.default = "c")
+) %>% 
+  clean_maui_tmk("tmk") %>% 
+  mutate(scenario = "No new permits") %>% 
+  distinct(tmk, .keep_all = TRUE)
+
+# Combine registry sources
+table_1_complete <- bind_rows(table_1_new, table_1_unchanged) %>% 
+  distinct(tmk, .keep_all = TRUE)
+
+# Attach bedroom and class gap-fill flags
+table_1_complete_flags <- table_1_complete %>% 
+  left_join(bedFlags_forTable1, by = "tmk") %>% 
+  left_join(class_flag_forTable1, by = "tmk") %>% 
+  select(-upgrade_scenario.x) %>% 
+  rename(upgrade_scenario = upgrade_scenario.y) %>% 
+  distinct(tmk, .keep_all = TRUE)
+
+# ------------ Table 2 --------------------- #
+
+table_2_unchanged <- read_csv(
+  file.path(driver_dir, "4_OSDS_N_Runoff/intermediate/step3/maui_table2_bedrooms_UNCHANGED.csv"),
+  col_types = cols(.default = "c")
+) %>% 
+  clean_maui_tmk("tmk") %>% 
+  mutate(across(-tmk, as.numeric))
+
+table_2_updated_forbind <- table_2_updatedGapfilled %>% 
+  clean_maui_tmk("tmk") %>% 
+  rename_with(~ str_replace(.x, "^newbeds", "bedrooms_"), starts_with("newbeds"))
+
+table_2_newonly <- table_2_new %>% 
+  clean_maui_tmk("tmk") %>% 
+  filter(tmk %!in% table_2_updatedGapfilled$tmk) %>% 
+  rename_with(~ str_replace(.x, "^newbeds", "bedrooms_"), starts_with("newbeds"))
+
+table_2_complete <- bind_rows(
+  table_2_unchanged, 
+  table_2_updated_forbind, 
+  table_2_newonly
+) %>% 
+  distinct(tmk, .keep_all = TRUE)
+
+
+# ------------ Table 3a --------------------- #
+
+
+table_3_unchanged <- read_csv(
+  file.path(driver_dir, "4_OSDS_N_Runoff/intermediate/step3/maui_table3_classes_UNCHANGED.csv"),
+  col_types = cols(.default = "c")
+) %>% 
+  clean_maui_tmk("tmk") %>% 
+  rename_with(~ str_replace(.x, "^osds_cl_", "osds_class_"), starts_with("osds_cl_"))
+
+table_3_updatedforbind <- table_3_updated_new %>% 
+  clean_maui_tmk("tmk") %>% 
+  rename(osds_class_pre2009 = newpre_2009) %>% 
+  rename_with(~ str_replace(.x, "^newclass", "osds_class_"), starts_with("newclass"))
+
+table_3_newonly <- table_3_new %>% 
+  clean_maui_tmk("tmk") %>% 
+  filter(tmk %!in% table_3_updatedforbind$tmk) %>% 
+  rename_with(~ str_replace(.x, "^newclass", "osds_class_"), starts_with("newclass"))
+
+table_3_complete <- bind_rows(
+  table_3_updatedforbind, 
+  table_3_unchanged, 
+  table_3_newonly
+) %>% 
+  distinct(tmk, .keep_all = TRUE)
+
+
+# ------------ Table 4a --------------------- #
+
+table_4_unchanged <- read_csv(
+  file.path(driver_dir, "4_OSDS_N_Runoff/intermediate/step3/maui_table4_commercial_UNCHANGED_draft.csv"),
+  col_types = cols(.default = "c")
+) %>% 
+  clean_maui_tmk("tmk") %>% 
+  select(tmk, any_of(c("commercial", "pitt_code", "pittcode", "x", "y"))) %>% 
+  rename(pitt_code = any_of(c("pittcode", "pitt_code"))) %>% 
+  mutate(across(everything(), as.character))
+
+table_4_withUpdates_forbind <- table4_withUpdates %>% 
+  clean_maui_tmk("tmk") %>% 
+  filter(!is.na(commercial) | !is.na(pitt_code)) %>% 
+  select(tmk, any_of(c("commercial", "pitt_code", "x", "y"))) %>% 
+  mutate(across(everything(), as.character))
+
+table_4_new <- read_csv(
+  file.path(driver_dir, "4_OSDS_N_Runoff/output-data/int/maui_tables/table1_tmk_registry_commercial.csv"),
+  col_types = cols(.default = "c")
+) %>% 
+  mutate(tmk = if ("full_taxid" %in% names(.)) full_taxid else tmk) %>% 
+  clean_maui_tmk("tmk") %>% 
+  filter(tmk %!in% table_4_withUpdates_forbind$tmk) %>% 
+  mutate(
+    commercial = "unknown",
+    pitt_code = "-9999"
+  ) %>% 
+  mutate(pitt_code = as.character(pitt_code)) %>% 
+  select(tmk, any_of(c("commercial", "pitt_code", "x", "y"))) %>% 
+  mutate(across(everything(), as.character))
+
+table_4_complete <- bind_rows(
+  table_4_unchanged,
+  table_4_new,
+  table_4_withUpdates_forbind
+) %>% 
+  distinct(tmk, .keep_all = TRUE)
+
+table_4_complete_cl <- table_4_complete %>% 
+  mutate(
+    pitt_code = if_else(is.na(pitt_code), "-9999", pitt_code),
+    commercial = if_else(is.na(commercial) | commercial == "unknown", "check google places", commercial)
+  )
+
+
+# ------------------------------------------------------------------------------
+# 5. FINAL RECONCILIATION & TABLE 1 OVERRIDES
+# ------------------------------------------------------------------------------
+
+# Identify commercial parcels that actually have residential bedroom data
+shouldbein_table_4 <- setdiff(table_1_complete_flags$tmk, table_2_complete$tmk)
+shouldbe_intable2 <- setdiff(table_4_complete_cl$tmk, shouldbein_table_4)
+
+# Exclude residential properties from Table 4
+table_4_complete_cl <- table_4_complete_cl %>% 
+  filter(tmk %!in% shouldbe_intable2)
+
+# Build Final Table 1 Master
+table_1_final_final <- table_1_complete_flags %>% 
+  mutate(use_table4 = tmk %in% table_4_complete_cl$tmk) %>% 
+  select(
+    tmk,
+    starts_with("n_"),
+    min_year,
+    max_year,
+    in_dwelldat,
+    status_since_otp,
+    n_buildings,
+    bed_trend,
+    year_built_combined,
+    bed_gapfill_flag = gapfill_flag,
+    permit_story = unique_story, 
+    upgrade_scenario,
+    use_table4
+  ) %>% 
+  distinct(tmk, .keep_all = TRUE)
+
+
+# ------------------------------------------------------------------------------
+# 6. AUTOMATED INTEGRITY CHECKS
+# ------------------------------------------------------------------------------
+
+cat("--- MAUI PIPELINE INTEGRITY CHECKS ---\n")
+cat("1. All Table 1 TMKs present in Table 3a:", all(table_1_final_final$tmk %in% table_3_complete$tmk), "\n")
+cat("2. All Table 2 TMKs present in Table 1:", all(table_2_complete$tmk %in% table_1_final_final$tmk), "\n")
+if (exists("maui_master_tmk_list")) {
+  cat("3. All Master TMKs present in Table 1:", all(maui_master_tmk_list %in% table_1_final_final$tmk), "\n")
+}
+
+
+# ------------------------------------------------------------------------------
+# 7. EXPORT STATEWIDE-COMPATIBLE CSVs
+# ------------------------------------------------------------------------------
+
+write_csv(
+  table_1_final_final,
+  file.path(driver_dir, "4_OSDS_N_Runoff/intermediate/step4/maui_table1_tmk_registry_ALL.csv")
+)
+
+write_csv(
+  table_2_complete,
+  file.path(driver_dir, "4_OSDS_N_Runoff/intermediate/step4/maui_table2_bedrooms_ALL.csv")
+)
+
+write_csv(
+  table_3_complete,
+  file.path(driver_dir, "4_OSDS_N_Runoff/intermediate/step4/maui_table3a_permitsApplied_ALL.csv")
+)
+
+write_csv(
+  table_4_complete_cl,
+  file.path(driver_dir, "4_OSDS_N_Runoff/intermediate/step4/maui_table4_commercial_draft.csv")
+)
+
+
+
+```
+
+
+
+##### Delete
+``` {r complete-tables-old }
 # --------------- Complete tables 1,2 and 3a for Maui --------------- #
 
 # read in table 1 new and unchanged versions, and add gapfill flags
@@ -1132,9 +1810,9 @@ calculate_active_permits <- function(apps) {
 }
 
 table_3a_long <- table_3_complete %>% 
-  rename(osds_cl_2008 = newpre_2009) %>% # note, this is a stand in for "pre 2009"
+  #rename(osds_cl_2008 = newpre_2009) %>% # note, this is a stand in for "pre 2009"
   pivot_longer(cols = -tmk, names_to = "Year", values_to = "Applied") %>% 
-  mutate(Applied = replace_na(Applied,0))
+  mutate(Applied = replace_na(as.numeric(Applied),0))
   
 table_3b_long <- table_3a_long %>% 
   arrange(tmk,Year) %>% 
@@ -1146,11 +1824,10 @@ table_3b_wide <- table_3b_long %>%
   pivot_wider(id_cols = tmk, names_from = Year,values_from = active_status)
 
 write_csv(table_3b_wide,
-          file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/maui_tables/table3b_allyears_draft.csv"))
+          file.path(driver_dir,"4_OSDS_N_Runoff/intermediate/step4/table3b_allyears_draft.csv"))
 
 
 
 ```
 
 
-## Step 5: Fill in Table 4 - happens in a different script
