@@ -748,7 +748,8 @@ oahu_otp_unchanged_table1 <- oahu_unchgd_encoded_dwell %>%
     max_year,
     in_dwelldat,
     scenario,
-    status_since_otp
+    status_since_otp,
+    n_buldings
   )
 
 # --- Table 2: Bedrooms Time Series ---
