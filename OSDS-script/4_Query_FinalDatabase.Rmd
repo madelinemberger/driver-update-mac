@@ -18,7 +18,6 @@ source(here("workflow/setup.R"))
 
 This markdown contains code to assemble and clean the final compiled database. It also contains the development code for the effluent query.
 
-
 ## Assemble Tables Into Final Dataabse
 
 Up until this point, I've worked on each dataset separately due to small differences in each islands' most recent dataset. 
@@ -72,13 +71,11 @@ final_table2_allislands <- rbind(oahu_2,
 
 write_csv(final_table2_allislands,file.path(driver_dir,"4_OSDS_N_Runoff/output-data/final_tables/table2_allislands.csv"))
 
-# table 3s
+# table 3as
 
 oahu_3a <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/oahu_tables/table3_class_all.csv")) %>% 
   rename(tmk = full_taxid)
 names(oahu_3a)[-1] <- paste0("osds_class_",names(oahu_3a)[-1])
-
-
 
 
 maui_3a <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/maui_tables/table3a_permitsApplied_ALL.csv")) %>% 
@@ -123,13 +120,20 @@ write_csv(final_table3b_allislands,file.path(driver_dir,"4_OSDS_N_Runoff/output-
 
 # table 4s - this one has already been combined 
 
-
+table_4_allislands <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/final_tables/table4_identified_allislands.csv"))
 
 ```
 
 ### Check to ensure Table 1 TMKS are accounted for. 
 
 ```{r}
+
+# --------- Read in Final Tables --------- #
+
+final_table2_allislands <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/final_tables/table2_allislands.csv"))
+final_table3a_allislands <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/final_tables/table3a_allislands.csv"))
+final_table3b_allislands <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/final_tables/table3b_allislands.csv"))
+
 
 table_1_tmks_all <- final_table1_allislands$tmk
 
