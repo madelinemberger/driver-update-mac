@@ -962,8 +962,11 @@ class_flag_forTable1 <- update_logic_refined_cl %>%
 
 ```
 
+### Step 4: Assemble Final Tables by Island
 
-#### Complete Tables 1 - 3a
+To run this, need to run STEP 0. Otherwise all dependencies should be loaded here.
+
+#### Complete Tables 1 - 3a, 4
 ```{r complete-tables}
 
 # read in table 1 new and unchanged versions, and add gapfill flags
@@ -1144,7 +1147,7 @@ write_csv(table_4_complete_cl,
 
 ```
 
-## Step 4: Create table 3b
+## Step 5: Create table 3b
 
 The additive encoding is what is known as a binary bit mask. Each class represents a power of 2, so every unique sum corresponds to exactly one combination of classes. 
 
@@ -1207,19 +1210,3 @@ write_csv(table_3b_wide,
 
 
 ```
-
-
-## Step 5: Fill in Table 4 using Google Places
-
-```{r}
-
-# first, how many do we have?
-
-kauia_table4 <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/kauai_tables/table4_percommercial_draft.csv")) 
-
-google_places <- kauia_table4 %>% 
-  filter(commercial == "check google places") # 274 + 
-
-
-```
-
