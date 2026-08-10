@@ -390,7 +390,7 @@ iws_oahu_permits <- iws_permit_data %>%
   clean_names() %>% 
   mutate(tmk = as.character(tmk)) # N = 1741
 
-tmks_permits <- unique(iws_oahu_permits$tmk) #1412
+tmks_permits <- unique(iws_oahu_permits$tmk) # 1412
 
 # execute join to see which tmks have dwell data
 
@@ -799,12 +799,7 @@ write_csv(oahu_otp_unchanged_table4_googleplaces,
 
 ```{r updated}
 
-# 1. Load missing prerequisite objects
-# Make sure oahu_updated is loaded from intermediate output if not in memory
-if (!exists("oahu_updated")) {
-  oahu_updated <- read_csv(file.path(driver_dir, "4_OSDS_N_Runoff/intermediate/step2-clean-permit-data/oahu_updated_draft.csv")) %>% 
-    mutate(tmk = as.character(tmk))
-}
+# 1. Load missing prerequisite objects - run STEP 0
 
 # 2. Bed count gap-fill checks
 table_2_new <- read_csv(file.path(driver_dir, "4_OSDS_N_Runoff/intermediate/step2-clean-permit-data/oahu_table2a_bedrooms_sum.csv")) %>% 
@@ -823,6 +818,9 @@ updates_notInTable2 <- setdiff(oahu_updated_forjoin$tmk, table_2_updated$tmk)
 # Route non-dwelling / commercial updates to Table 4
 table4_withUpdates <- oahu_updated_forjoin %>% 
   filter(tmk %in% updates_notInTable2)
+
+write_csv(table4_withUpdates,
+          file.path(driver_dir, "4_OSDS_N_Runoff/intermediate/step3/oahu_table4_updated.csv"))
 
 # 3. Class Gap-filling
 table_3_new <- read_csv(file.path(driver_dir, "4_OSDS_N_Runoff/intermediate/step2-clean-permit-data/oahu_table3_newclass_all.csv")) %>% 
@@ -945,9 +943,14 @@ table_3_new_updated <- update_logic_refined_cl %>%
 class_flag_forTable1 <- update_logic_refined_cl %>%
   select(tmk, class_match_flag = scenario_match_flag, unique_story, upgrade_scenario)
 
+write_csv(table_3_new_updated,
+          file.path(driver_dir,"4_OSDS_N_Runoff/intermediate/step3/oahu_table3_new_and_updated.csv"))
+
 ```
 
-#### Complete Tables 1 - 3a by combining New, Unchanged and Updated
+### Step 4: Assemble Final Tables by Island
+
+#### Complete Tables 1 - 3b by combining New, Unchanged and Updated
 
 ```{r complete-tables}
 
@@ -978,8 +981,15 @@ table_1_complete <- bind_rows(table_1_new, table_1_unchanged)
 table_2_unchanged <- read_csv(file.path(driver_dir, "4_OSDS_N_Runoff/intermediate/step3/oahu_table2_beds_UNCHANGED.csv")) %>% 
   mutate(tmk = as.character(tmk))
 
+# 2. Oahu dwell all tmks 
+
+oahu_dwell_alltmks <- oahu_dwell_alltmks <- read_csv(
+  file.path(driver_dir, "4_OSDS_N_Runoff/intermediate/step1-clean-dwelling-records/oahu_dwell_clean_allyears.csv")
+) %>% 
+  mutate(tmk = as.character(tmk))
+
 # 2. Updated parcels (rename newbeds -> bedrooms_)
-table_2_updatedforbind <- table_2_updated %>% 
+table_2_updatedforbind <- table_2_updated %>% # this is created in the preceding chunk
   mutate(tmk = as.character(tmk)) %>% 
   rename_with(~ str_replace(.x, "^newbeds", "bedrooms_"), starts_with("newbeds"))
 
@@ -1047,6 +1057,8 @@ table_3_unchanged <- read_csv(file.path(driver_dir, "4_OSDS_N_Runoff/intermediat
   mutate(tmk = as.character(tmk)) %>% 
   rename(newclass2010 = osds_class_2010)
 
+table_3_new_updated <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/intermediate/step3/oahu_table3_new_and_updated.csv"))
+
 table_3_updatedforbind <- table_3_new_updated %>% 
   mutate(tmk = as.character(tmk))
 
@@ -1058,7 +1070,7 @@ table_3_newonly <- table_3_new %>%
 table_3_complete <- bind_rows(table_3_updatedforbind, table_3_unchanged, table_3_newonly) %>%   rename_with(~ str_replace(.x, "newclass", "osds_class_"), 
               starts_with("newclass")) 
 
-table_1_withClassflags <- table_1_complete_bedflags %>% 
+table_1_withClassflags <- table_1_complete_bedflags %>% # where does this come from?
   left_join(class_flag_forTable1, by = "tmk")
 
 
@@ -1068,6 +1080,8 @@ table_1_withClassflags <- table_1_complete_bedflags %>%
 table_4_unchanged <- read_csv(file.path(driver_dir, "4_OSDS_N_Runoff/intermediate/step3/oahu_table4_commercial_UNCHANGED_draft.csv")) %>% 
   mutate(tmk = as.character(tmk)) %>% 
   select(tmk, any_of(c("x", "y")))
+
+table4_withUpdates <- read_csv(file.path(driver_dir, "4_OSDS_N_Runoff/intermediate/step3/oahu_table4_updated.csv"))
 
 # 2. Updated commercial locations from current run
 table_4_withUpdates_forbind <- table4_withUpdates %>% 
@@ -1100,6 +1114,8 @@ table_1_final <- table_1_withClassflags %>%
   select(
     tmk,
     starts_with("n_"),
+    min_year,
+    max_year,
     in_dwelldat,
     status_since_otp,
     n_buildings,
@@ -1124,11 +1140,11 @@ all(table_2_complete$tmk %in% table_1_final$tmk)
 # Authoritative list all in table 1?
 
 all(master_tmk_list %in% table_1_final$tmk) # true
-shouldbe_intable1 <- setdiff(master_tmk_list, table_1_final$tmk)
+#shouldbe_intable1 <- setdiff(master_tmk_list, table_1_final$tmk)
 
 # Difference in table 2 and table 1 == table 4?
 
-shouldbein_table_4 <- setdiff(table_1_final$tmk,table_2_complete$tmk) #2710
+shouldbein_table_4 <- setdiff(table_1_final$tmk,table_2_complete$tmk) #2710, table 4 has 82 more N
 
 shouldbe_intable2 <- setdiff(shouldbein_table_4,table_4_complete$tmk) # 0
 
@@ -1136,6 +1152,7 @@ head(shouldbe_intable2)
 
 all(shouldbe_intable2 %in% table_2_complete$tmk) #TRUE
 
+# remove the mystery TMKS
 table_4_complete_cl <- table_4_complete %>% 
   filter(tmk %!in% shouldbe_intable2)
 
@@ -1143,7 +1160,7 @@ table_4_complete_cl <- table_4_complete %>%
 # update use table 4 flag
 table_1_final_final <- table_1_final %>%
   mutate(
-    use_table4 = ifelse(tmk %in% table_4_complete_cl$tmk, TRUE,FALSE)
+    use_table_4 = ifelse(tmk %in% table_4_complete_cl$tmk, TRUE,FALSE)
   )
 
 # Save all! 
@@ -1164,7 +1181,7 @@ write_csv(table_4_complete_cl,
 
 ```
 
-## Step 4: Create table 3b
+#### Create table 3b
 
 The additive encoding is what is known as a binary bit mask. Each class
 represents a power of 2, so every unique sum corresponds to exactly one
@@ -1229,15 +1246,16 @@ table_3b_wide <- table_3b_long %>%
   pivot_wider(id_cols = tmk, names_from = Year,values_from = active_status)
 
 write_csv(table_3b_wide,
-          file.path(driver_dir,"4_OSDS_N_Runoff/intermediate/step4/oahu_table3b_allyears_draft.csv"))
+          file.path(driver_dir,"4_OSDS_N_Runoff/intermediate/step4/oahu_table3b_activeOSDS.csv"))
 
 ```
 
 ## Final Naming Schema From Oahu
 
 | Table | FileName | Key Column Names |
-|----|----|----|
-| Table 1 | {island}\_table1_tmk_registry_ALL.csv | tmk, n_addresses, in_dwelldat, status_since_otp, n_buildings, bed_trend, year_built_combined, bed_gapfill_flag, permit_story, upgrade_scenario, use_table4 |
+|------------------------|------------------------|------------------------|
+| Table 1 | {island}\_table1_tmk_registry_ALL.csv | "tmk", "n_permits", "n_years","n_addresses","n_buildings", "min_year", "max_year", "in_dwelldat", "status_since_otp", "bed_trend", "year_built_combined","bed_gapfill_flag", "permit_story", "upgrade_scenario", "use_table_4" |
 | Table 2 | {island}\_table2_bedrooms_ALL.csv | tmk, bedrooms_2010, bedrooms_2011, ..., bedrooms_2020" |
-| Table 3 | {island}\_table3a_permitsApplied_ALL.csv | tmk, osds_class_pre2009, osds_class_2009, osds_class_2010, ..., osds_class_2020 |
+| Table 3a | {island}\_table3a_permitsApplied_ALL.csv | tmk, osds_class_pre2009, osds_class_2009, osds_class_2010, ..., osds_class_2020 |
+| Table 3b | {island}\_table3a_permitsApplied_ALL.csv | tmk, osds_cl_2008, osds_class_2009, osds_class_2010, ..., osds_class_2020 |
 | Table 4 | {island}\_table4_commercial_draft.csv | tmk, x, y |

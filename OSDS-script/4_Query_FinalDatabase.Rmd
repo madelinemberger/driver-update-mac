@@ -18,7 +18,7 @@ source(here("workflow/setup.R"))
 
 This markdown contains code to assemble and clean the final compiled database. It also contains the development code for the effluent query.
 
-## Assemble Tables Into Final Dataabse
+## Assemble Tables Into Final Database and Final Gapfilling
 
 Up until this point, I've worked on each dataset separately due to small differences in each islands' most recent dataset. 
 Here I will combine them so we have one database with 5 tables:
@@ -29,33 +29,33 @@ Here I will combine them so we have one database with 5 tables:
 -Table 3b: Cummulative OSDS status per year
 -Table 4: Non-residential OSDS
 
+
+At this stage, we should also check to ensure there is data for at least one year for each TMK. Some buildings in the dwell dat, for example, did not have bedrooms listed (esp in Maui)
+We will gapfill these with the following assumption:
+- IF the tmk is in the tax record, with total_rooms, but no bedrooms, then we will assign the number of bedrooms as 50% of the total rooms
+- This comes from the following statistics on housing inventory: median number of rooms for HI homes is 4.7, and 55.4 percent of homes have 3 or more bedrooms. Therefore, a typical house has 2 or 3 bedrooms out of 4.7 rooms, so roughly 50% of a building can be considered bedrooms. 
+
 ```{r}
 
+#
 
-# table1s
+# ------------------- Table 1 -----------------------------
 
-oahu_1 <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/oahu_tables/table1_tmk_registry_all.csv"))
-maui_1 <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/maui_tables/table1_tmk_registry_all.csv"))
-kauai_1 <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/kauai_tables/table1_tmk_registry_all.csv"))
+oahu_1 <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/intermediate/step4/oahu_table1_tmk_registry_ALL.csv"))
+maui_1 <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/intermediate/step4/maui_table1_tmk_registry_ALL.csv"))
 
-hi_1 <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/hi_tables/table1_tmk_registry_ALL_draft.csv")) %>% select(-class_match_flag, -pitt_assignment,-min_year,-max_year,-scenario) %>% 
-  rename(permit_story = unique_story,bed_gapfill_flag = bedroom_data_source) %>% 
-  mutate(year_built_combined = 9999)
 
-# missing key column names for Hi
+table_1_complete <- rbind(oahu_1,maui_1) # oahu is missing min year and max year. 
 
-final_table1_kmo <- rbind(oahu_1,
-                                 maui_1) %>% 
-  rbind(kauai_1) %>% 
-  select(-starts_with("use"), -n_buildings)
-  
-final_table1_allislands <-  rbind(hi_1,final_table1_kmo)
 
-# table 2
-oahu_2 <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/oahu_tables/table2_bedrooms_ALL.csv")) %>% 
-  mutate(`2021` = NA,
-         `2022` = NA,
-         `2023` = NA)
+# ------------------ Table 2 ----------------- #
+
+
+oahu_table2 <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/intermediate/step4/oahu_table2_bedrooms_ALL.csv"))
+maui_table2 <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/intermediate/step4/maui_table2_bedrooms_ALL.csv"))
+
+
+# Create lists of tmks that are 0s for bedroms
 
 # NOTE - we don't have most recent data for oahu
 maui_2 <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/maui_tables/table2_bedrooms_ALL.csv"))
