@@ -14,7 +14,7 @@ source(here("workflow/setup.R"))
 
 ```
 
-# Final Databse and Query
+# Calculate Effluent from Database
 
 This markdown contains code to assemble and clean the final compiled database. It also contains the development code for the effluent query.
 

@@ -423,19 +423,13 @@ write_csv(table3_classes,
 
 ### Step 3: Compare and Integrate Past Datasets
 
-In this step we have to add in the old data, but differentiate between data that has been updated, unchanged. We also have to gapfill the bedroom and class data, because the old data is just a shot in time. 
+In this step we have to add in the old data, but differentiate between data that has been updated, unchanged. We also have to gapfill the bedroom and class data, because the old data is just a snapshot in time in time and in some cases we don't have the year information for that OSDS entry. 
 
 #### Records Unchanged Since OTP
 
 These have no new permit data. But, it would be nice to get a better understanding of their bedroom # over time. We have to make one assumption in order to merge our dwell data with this older data. 
 
-Here, 
-1. apply class encoding 
-2. we'll join the bedroom data to the unchanged otp tmks. 
-3. Then, sort into our 3 tables as before.
-We'll save these ALONE just as the unchanged tmks
-
-We also use pittcode here to help us filter stuff out
+For Maui, we also use pittcode here to help us filter non residential TMKS out. 
 
 
 ```{r unchanged}
@@ -606,7 +600,7 @@ write_csv(
 
 #### Updates
 
-These ones are present in OTP but also in the new data. 
+These tmks are ones are present in OTP with OSDS recoreded (ie had an osds permit befor 2010) but also in the new data, meaning they have applied for a new permit since 2010 as well.  
 
 ```{r updated}
 
@@ -1179,7 +1173,7 @@ calculate_active_permits <- function(apps) {
 }
 
 table_3a_long <- table_3_complete %>% 
-  #rename(osds_cl_2008 = newpre_2009) %>% # note, this is a stand in for "pre 2009"
+  rename(osds_class_2008 = osds_class_pre2009) %>% # note, this is a stand in for "pre 2009"
   pivot_longer(cols = -tmk, names_to = "Year", values_to = "Applied") %>% 
   mutate(Applied = replace_na(as.numeric(Applied),0))
   

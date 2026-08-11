@@ -23,9 +23,118 @@ calc_mode <- function(x, na.rm = FALSE) {
 ```
 
 
-## New Data: clean up and join 
+## Step 0: Create Authoritative TMK lists
 
-### Step 1: Clean Up Dwell Data
+```{r}
+
+library(tidyverse)
+library(janitor)
+
+'%!in%' <- Negate('%in%')
+
+# ==============================================================================
+# 0. HAWAII COUNTY (BIG ISLAND) TMK CLEANER FUNCTION
+# ==============================================================================
+clean_hawaii_tmk <- function(df, target_col = "tmk") {
+  col_names <- names(df)
+  actual_col <- if (target_col %in% col_names) {
+    target_col
+  } else if ("full_taxid" %in% col_names) {
+    "full_taxid"
+  } else if ("TMK" %in% col_names) {
+    "TMK"
+  } else {
+    target_col
+  }
+  
+  df %>% 
+    mutate(
+      raw_val = as.character(.data[[actual_col]]),
+      raw_val = if_else(str_detect(raw_val, "e\\+"), sprintf("%.0f", as.numeric(raw_val)), raw_val),
+      digits = str_replace_all(raw_val, "[^0-9]", ""),
+      digits = if_else(nchar(digits) >= 9, substr(digits, 1, 9), digits),
+      digits = case_when(
+        nchar(digits) == 8 ~ paste0("3", digits),
+        nchar(digits) == 9 & str_starts(digits, "0") ~ paste0("3", substr(digits, 2, 9)),
+        TRUE ~ str_pad(digits, width = 9, side = "left", pad = "0")
+      )
+    ) %>% 
+    mutate(tmk = digits) %>% 
+    select(-any_of(c("raw_val", "digits"))) %>% 
+    filter(!is.na(tmk) & tmk != "" & tmk != "000000000")
+}
+
+# ==============================================================================
+# 1. READ PERMIT DATA (IWS 2009–PRESENT)
+# ==============================================================================
+
+iws_permit_data <- read_csv(
+  file.path(data_dir, "osds/shared-data/2009_Present_IWSList_Permits.csv"),
+  col_types = cols(.default = "c")
+) %>% 
+  clean_names()
+
+iws_hawaii_permits <- iws_permit_data %>%
+  clean_hawaii_tmk("tmk") %>% 
+  filter(str_starts(tmk, "3"))
+
+iws_hawaii_permits_tmk <- iws_hawaii_permits %>% pull(tmk) %>% unique() #7347
+
+# ==============================================================================
+# 2. READ BASELINE DATA (HIGIS 2010 OTP - HAWAII COUNTY)
+# ==============================================================================
+
+otp_hawaii_raw <- read_csv(
+  file.path(driver_dir, "4_OSDS_N_Runoff/large-input-data/OSDS_HIGIS_2010/On-site_Sewage_Disposal_Systems_-_Hawaii_Island.csv"),
+  col_types = cols(.default = "c")
+) %>% 
+  clean_names() %>% 
+  clean_hawaii_tmk("tmk")
+
+otp_hawaii_tmk <- otp_hawaii_raw %>% pull(tmk) %>% unique()
+
+# ==============================================================================
+# 3. PARTITION BASELINE & NEW PERMITS
+# ==============================================================================
+
+# Unchanged baseline TMKs (in HIGIS baseline, NO new permits)
+hawaii_unchanged <- otp_hawaii_raw %>% 
+  filter(tmk %!in% iws_hawaii_permits_tmk)
+
+unchanged_tmks <- hawaii_unchanged %>% pull(tmk) %>% unique()
+
+# Updated baseline TMKs (in HIGIS baseline AND has new permits)
+hawaii_updated <- otp_hawaii_raw %>% 
+  filter(tmk %in% iws_hawaii_permits_tmk)
+
+updated_tmks <- hawaii_updated %>% pull(tmk) %>% unique()
+
+# Brand new permit TMKs (in IWS permits, NOT in HIGIS baseline)
+hawaii_new <- iws_hawaii_permits %>% 
+  filter(tmk %!in% otp_hawaii_tmk)
+
+new_tmks <- hawaii_new %>% pull(tmk) %>% unique()
+
+# ==============================================================================
+# 4. CREATE AUTHORITATIVE MASTER TMK LIST
+# ==============================================================================
+
+hawaii_master_tmk_list <- unique(c(iws_hawaii_permits_tmk, otp_hawaii_tmk))
+
+cat("--- HAWAII COUNTY (BIG ISLAND) STEP 0 SUMMARY ---\n")
+cat("Total Baseline 2010 OTP Records:", nrow(otp_hawaii_raw), "(Unique TMKs:", length(otp_hawaii_tmk), ")\n")
+cat("Total IWS Permit Records:", nrow(iws_hawaii_permits), "(Unique TMKs:", length(iws_hawaii_permits_tmk), ")\n")
+cat("--------------------------------------------------\n")
+cat("Unchanged Baseline TMKs:", length(unchanged_tmks), "\n")
+cat("Updated Baseline TMKs:", length(updated_tmks), "\n")
+cat("Brand-New Permit TMKs:", length(new_tmks), "\n")
+cat("Authoritative Master TMK Count:", length(hawaii_master_tmk_list), "\n")
+
+
+```
+
+
+## Step 1: Clean Up Dwell Data
 
 The Hawaii data comes to us raw in text files, similar to Oahu. Here we will just generate the same summary tables as we did for Oahu. We will have to read in each excel file here and do some cleaning. 
 
@@ -42,7 +151,17 @@ This might get long - the Hawaii dwell data is quite messy. A few notes from the
 2010 - 2012 data did not come with extract formula sheets with them
 
 
-```{r}
+#### First Define Col Specs for Parsing
+
+I realized that specification docs were included for all years after 2012. I looked at them all side by side and there appear to be two distinct versions. The first (A) applies only to 2013, and 2019 - 2023. The second one (B) applies to 2014 - 2018.
+
+They are actually identical until the year built column, which makes sense because when I was applying the ones above to different groups of years, the column that clued me into if it was working or not was year built. 
+
+In A, yrbuilt is 434 to 437
+In B, yrblt is 425 to 429
+
+
+```{r col-specs}
 
 library(readr)
 
@@ -104,61 +223,6 @@ col_specs_2022 <- fwf_positions(
           451, 456, 460, 461, 465, 487, 496, 507, 512, 520,
           527,534))
 
-
-# start with 2011 - 2015
-
-hi_dwell_2011 <- read_fwf(file.path(driver_dir,"4_OSDS_N_Runoff/input-data/Dwelling_Data_Raw/Hawaii_DwellRaw_12182025/2011/DWELDAT.TXT"),
-                          col_positions = col_specs_2015,
-                          na = c("", "NA"),
-                          col_types = cols(.default = col_character())) %>%
-  mutate(across(everything(), ~trimws(.))) 
-
-hi_dwell_2013 <- read_fwf(file.path(driver_dir,"4_OSDS_N_Runoff/input-data/Dwelling_Data_Raw/Hawaii_DwellRaw_12182025/2013/DWELDAT.TXT"),
-                          col_positions = col_specs_2015,
-                          na = c("", "NA"),
-                          col_types = cols(.default = col_character())) %>%
-  mutate(across(everything(), ~trimws(.))) 
-
-hi_dwell_2014 <- read_fwf(file.path(driver_dir,"4_OSDS_N_Runoff/input-data/Dwelling_Data_Raw/Hawaii_DwellRaw_12182025/2014/DWELDAT.TXT"),
-                          col_positions = col_specs_2015,
-                          na = c("", "NA"),
-                          col_types = cols(.default = col_character())) %>%
-  mutate(across(everything(), ~trimws(.))) 
-
-hi_dwell_2015 <- read_fwf(file.path(driver_dir,"4_OSDS_N_Runoff/input-data/Dwelling_Data_Raw/Hawaii_DwellRaw_12182025/2015/DWELDAT.TXT"),
-                          col_positions = col_specs_2015,
-                          na = c("", "NA"),
-                          col_types = cols(.default = col_character())) %>%
-  mutate(across(everything(), ~trimws(.))) 
-
-hi_dwell_2016 <- read_fwf(file.path(driver_dir,"4_OSDS_N_Runoff/input-data/Dwelling_Data_Raw/Hawaii_DwellRaw_12182025/2016/DWELDAT.TXT"),
-                          col_positions = col_specs_2015,
-                          na = c("", "NA"),
-                          col_types = cols(.default = col_character())) %>%
-  mutate(across(everything(), ~trimws(.))) # this one still ok
-
-# check later years
-
-hi_dwell_2021 <- read_fwf(file.path(driver_dir,"4_OSDS_N_Runoff/input-data/Dwelling_Data_Raw/Hawaii_DwellRaw_12182025/2021/DWELDAT.TXT"),
-                          col_positions = col_specs_2022,
-                          na = c("", "NA"),
-                          col_types = cols(.default = col_character())) %>%
-  mutate(across(everything(), ~trimws(.)))
-
-
-
-```
-
-I realized that specification docs were included for all years after 2012. I looked at them all side by side and there appear to be two distinct versions. The first (A) applies only to 2013, and 2019 - 2023. The second one (B) applies to 2014 - 2018.
-
-They are actually identical until the year built column, which makes sense because when I was applying the ones above to different groups of years, the column that clued me into if it was working or not was year built. 
-
-In A, yrbuilt is 434 to 437
-In B, yrblt is 425 to 429
-
-```{r}
-
-library(readr)
 
 colspec_A <- fwf_positions(
   start = c(
@@ -255,8 +319,10 @@ hi_dwell_2013 <- read_fwf(file.path(driver_dir,"4_OSDS_N_Runoff/large-input-data
 ```
 
 
-#### Step 1 Best Way
-For Hawaii, Iʻm going to try a slightly different approach where I filter before worrying about the column parsing. Just to make things lighter 
+##### Apply to data
+
+
+For Hawaii, Iʻm going to try a slightly different approach where I filter by the TMKS with permits before worrying about the column parsing. Just to make things lighter 
 
 
 ```{r}
@@ -265,11 +331,19 @@ library(readr)
 library(dplyr)
 library(purrr)
 library(janitor)
+library(stringr)
+library(tibble)
 
-# read in HI iws permits
+'%!in%' <- Negate('%in%')
 
-iws_permit_data <- read_csv(file.path(data_dir, "osds/shared-data/2009_Present_IWSList_Permits.csv"))
+# ==============================================================================
+# 1. READ PERMITS & EXTRACT TMK LIST
+# ==============================================================================
 
+iws_permit_data <- read_csv(
+  file.path(data_dir, "osds/shared-data/2009_Present_IWSList_Permits.csv"),
+  col_types = cols(.default = "c")
+)
 
 # filter out just the permits in Hawaii, and create permit ID tracker
 
@@ -279,9 +353,11 @@ iws_hi_permits <- iws_permit_data %>%
   rename(full_taxid = tmk_char) %>%  
   rowid_to_column("permit_id") # 7347
 
-tmks_permits <- iws_hi_permits$full_taxid
+#tmks_permits <- iws_hi_permits$full_taxid
 
-# function to go get and read in each text file, parse, and filter
+tmks_permits <- hawaii_master_tmk_list
+
+# ------------ function to go get and read in each text file, parse, and filter -------------
 read_and_filter_hi_dwell <- function(year, driver_dir, col_specs, tmks_permits) {
   file_path <- file.path(driver_dir,
                          "4_OSDS_N_Runoff/large-input-data/Dwelling_Data_Raw/Hawaii_DwellRaw_12182025",
@@ -304,156 +380,187 @@ read_and_filter_hi_dwell <- function(year, driver_dir, col_specs, tmks_permits) 
     filter(tmk_9 %in% tmks_permits)
 }
 
-# next, apply function for years that correspond to each Spec 
+# ==============================================================================
+# 3. PROCESS BY SCHEMA ERA
+# ==============================================================================
 
-yearsA <- c(2019:2023)
-
-yearsA_list <- map(yearsA, ~read_and_filter_hi_dwell(.x, driver_dir, colspec_A, tmks_permits))
-yearsA_df <- do.call(rbind, yearsA_list)
-
-
-yearsB <- c(2013:2018)
-
-yearsB_list <- map(yearsB, ~read_and_filter_hi_dwell(.x, driver_dir, colspec_B, tmks_permits))
-yearsB_df <- do.call(rbind, yearsB_list)
-
-
-# experiment: try b on A years? this seems to work better
-
-yearsAbyB_list <- map(yearsA, ~read_and_filter_hi_dwell(.x, driver_dir, colspec_B, tmks_permits))
-yearsAbyB_df <- do.call(rbind, yearsAbyB_list) 
-
-# last bit: try both col spec versions on 2010 - 2012. 
-yearsC <- (2010:2012)
-yearsCbyA_list <- map(yearsC, ~read_and_filter_hi_dwell(.x, driver_dir, colspec_A, tmks_permits))
-yearsCbyA_df <- do.call(rbind, yearsCbyA_list)
-
-yearsCbyB_list <- map(yearsC, ~read_and_filter_hi_dwell(.x, driver_dir, colspec_B, tmks_permits))
-yearsCbyB_df <- do.call(rbind, yearsCbyB_list)
-
-# weirdly, while A was close in column it was split, while B was not split just behind. But I think A i feel safer about
-
-dwell_2010_2012 <- yearsCbyA_df %>% 
-  mutate(year_built_fixed = paste0(YRBLT,substr(EFFYR,1,1))) %>% #paste together year and the first character of eff year
-  mutate(effective_year_fixed = paste0(substr(EFFYR,2,nchar(EFFYR)), substr(COND,1,1))) %>% 
+# Era 1: 2010–2012 (Spec A - Requires Column Shift Correction)
+years_2010_2012 <- 2010:2012
+dwell_2010_2012 <- map_dfr(years_2010_2012, ~read_and_filter_hi_dwell(.x, driver_dir, colspec_A, tmks_permits)) %>% 
+  mutate(
+    year_built_fixed = paste0(YRBLT, substr(EFFYR, 1, 1)),
+    effective_year_fixed = paste0(substr(EFFYR, 2, nchar(EFFYR)), substr(COND, 1, 1))
+  ) %>% 
   clean_names() %>% 
-  select(jursi_id,
-         tmk,
-         tmk_9,
-         taxyr,
-         card,
-         fixbath,
-         fixhalf,
-         rmtot,
-         rmbed,
-         yrblt = year_built_fixed,
-         effyr = effective_year_fixed)
-  
+  select(
+    jursi_id, tmk, tmk_9, taxyr, card,
+    fixbath, fixhalf, rmtot, rmbed,
+    yrblt = year_built_fixed,
+    effyr = effective_year_fixed
+  )
 
-
-# select colums needed and bind all together
-
-dwell_2013_2023 <- rbind(yearsAbyB_df, yearsB_df) %>% 
+# Era 2: 2013–2018 (Spec B)
+years_2013_2018 <- 2013:2018
+dwell_2013_2018 <- map_dfr(years_2013_2018, ~read_and_filter_hi_dwell(.x, driver_dir, colspec_B, tmks_permits)) %>% 
   clean_names() %>% 
-  select(jursi_id,
-         tmk,
-         tmk_9,
-         taxyr,
-         card,
-         fixbath,
-         fixhalf,
-         rmtot,
-         rmbed,
-         yrblt,
-         effyr)
+  select(jursi_id, tmk, tmk_9, taxyr, card, fixbath, fixhalf, rmtot, rmbed, yrblt, effyr)
 
-# bind all together!
+# Era 3: 2019–2023 (Spec A)
+years_2019_2023 <- 2019:2023
+dwell_2019_2023 <- map_dfr(years_2019_2023, ~read_and_filter_hi_dwell(.x, driver_dir, colspec_A, tmks_permits)) %>% 
+  clean_names() %>% 
+  mutate(
+    # Re-stitch last digit of yrblt from the start of effyr if taxyr == 2023 and nchar(yrblt) == 3
+    yrblt_fixed = if_else(
+      taxyr == "2023" & nchar(yrblt) == 3,
+      paste0(yrblt, substr(effyr, 1, 1)),
+      yrblt
+    ),
+    effyr_fixed = if_else(
+      taxyr == "2023" & nchar(yrblt) == 3,
+      substr(effyr, 2, nchar(effyr)),
+      effyr
+    )
+  ) %>% 
+  select(
+    jursi_id, tmk, tmk_9, taxyr, card, 
+    fixbath, fixhalf, rmtot, rmbed, 
+    yrblt = yrblt_fixed, 
+    effyr = effyr_fixed
+  )
 
+# ==============================================================================
+# 4. CONSOLIDATE AND EXPORT
+# ==============================================================================
 
-allyears_hi_dwell <- rbind(dwell_2010_2012, dwell_2013_2023) %>% 
+allyears_hi_dwell <- bind_rows(dwell_2010_2012, dwell_2013_2018, dwell_2019_2023) %>% 
   rename(full_taxid = tmk_9)
 
+out_dwell_path <- file.path(driver_dir, "4_OSDS_N_Runoff/intermediate/step1-clean-dwelling-records/hi_dwell_osds_tmks.csv")
+dir.create(dirname(out_dwell_path), recursive = TRUE, showWarnings = FALSE)
+write_csv(allyears_hi_dwell, out_dwell_path)
 
-
-# save
-
-write_csv(allyears_hi_dwell, 
-          file.path(driver_dir,"4_OSDS_N_Runoff/output-data/dwellings/hi_dwell_clean_2010_2023_permitTMKonly.csv"))
 
 
 ```
 
 Ok so it looks like col Spec B has worked really well for all years. Who knew! Iʻm going to quickly check for any mistakes below, then we can move on.
 
+The yearbuilt column is important for gapfilling, so its worth making sure it looks right.
+
 ```{r}
 
-# if starting here, read in HI clean dwelling data
-
-allyears_hi_dwell <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/dwellings/hi_dwell_clean_2010_2023_permitTMKonly.csv"))
 
 # create new column with length of yearbuilt, and print unique instances
 
-allyears_dwell$yearblt_length <- nchar(allyears_dwell$YRBLT)
+allyears_hi_dwell$yearblt_length <- nchar(allyears_hi_dwell$yrblt)
 
-unique(allyears_dwell$yearblt_length) # 4 and NA
+unique(allyears_hi_dwell$yearblt_length) # 4 and 3
 
-# look at the NAS
+# look at the 3
 
-allyears_dwell_yrblt_Na <- allyears_dwell %>% filter(is.na(yearblt_length))
+allyears_dwell_yrblt_3 <- allyears_hi_dwell %>% filter(yearblt_length == 3)
 
 # which years does this apply to?
 
-unique(allyears_dwell_yrblt_Na$TAXYR) # since 2019
+unique(allyears_dwell_yrblt_3$taxyr) # since 2023
 
+
+# lets look at 2023s and see if we can figure out where the missing digit wrny
+
+ # allyears_hi_dwell %>% 
+ #  filter(taxyr == "2023", nchar(yrblt) == 3) %>% 
+ #  select(tmk, taxyr, rmtot, rmbed, yrblt, effyr) %>% 
+ #  head(10)
+ # 
+# after running this, I added code in the chunk above to manually fix 2023 values. 
+
+# last check: are the year builts making sense? 
+
+# Diagnostic: Find non-numeric, pre-1800, or future year_built values
+invalid_yrblt <- allyears_hi_dwell %>% 
+  mutate(yrblt_num = suppressWarnings(as.numeric(yrblt))) %>% 
+  filter(!is.na(yrblt) & (is.na(yrblt_num) | yrblt_num < 1850 | yrblt_num > 2023))
+
+cat("Total records with invalid/outlier year built:", nrow(invalid_yrblt), "\n")
 ```
 
-Hmm ok so I think I actually did not solve the parsing problem, and 2019 - 2023 did not parse correctly. Above, I went back and used col spec A on 2019 - 2023, and B for the rest. 
 
-Lastly, we need to check if any of the dwellings with OSDS have updates since 2010 in their bedroom data. We'll re-run the same process above, but with a new list of tmks from the old osds dataset.I do this in Step 3b. 
-
-### Step 2: Bring in IWS data
+## Step 2: Bring in IWS data
 
 Here we join dwell data to the permit information for the ones that correspond to dwellings, and save the list of non-dwell TMKS.
 
-```{r}
 
-# read in clean dwelling data
-
-allyears_hi_dwell <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/dwellings/hi_dwell_clean_2010_2023_permitTMKonly.csv")) %>% 
-  mutate(full_taxid = as.character(full_taxid))
-
-# read in HI iws permits
-
-iws_permit_data <- read_csv(file.path(data_dir, "osds/shared-data/2009_Present_IWSList_Permits.csv"))
+```{r iws-dwell-match}
 
 
-# filter out just the permits in Hawaii, and create permit ID tracker
+library(readr)
+library(dplyr)
+library(stringr)
+library(tibble)
+
+'%!in%' <- Negate('%in%')
+
+# ==============================================================================
+# 1. READ CLEAN DWELLING DATA & STANDARDIZE TMK
+# ==============================================================================
+
+allyears_hi_dwell <- read_csv(
+  file.path(driver_dir, "4_OSDS_N_Runoff/intermediate/step1-clean-dwelling-records/hi_dwell_osds_tmks.csv"),
+  col_types = cols(.default = "c")
+) %>% 
+  select(-tmk) %>% 
+  rename(tmk = any_of("full_taxid")) %>% 
+  mutate(tmk = as.character(tmk))
+
+# ==============================================================================
+# 2. READ PERMIT DATA & STANDARDIZE TMK
+# ==============================================================================
+
+iws_permit_data <- read_csv(
+  file.path(data_dir, "osds/shared-data/2009_Present_IWSList_Permits.csv"),
+  col_types = cols(.default = "c")
+)
 
 iws_hi_permits <- iws_permit_data %>% 
-  mutate(tmk_char = as.character(TMK)) %>% 
-  filter(str_starts(tmk_char,"3")) %>% 
-  rename(full_taxid = tmk_char) %>%  
-  rowid_to_column("permit_id") # 7347
+  mutate(tmk = as.character(TMK)) %>% 
+  filter(str_starts(tmk, "3")) %>% 
+  rowid_to_column("permit_id")
 
-tmks_permits <- iws_hi_permits$full_taxid
+tmks_permits <- iws_hi_permits$tmk
 
-# execute join to see which tmks have dwell data
+# ==============================================================================
+# 3. JOIN PERMITS WITH DWELLING DATA BY TMK
+# ==============================================================================
 
-iws_hi_dwell_join <- inner_join(iws_hi_permits, allyears_hi_dwell, by = "full_taxid") %>% 
-  distinct() # 69630 rows, 6011 TMKS
-# also filter, this should have fewer rows but the same number of tmks
+# Match permits to dwelling records
+iws_hi_dwell_join <- inner_join(iws_hi_permits, allyears_hi_dwell, by = "tmk") %>% 
+  distinct()
 
+# Permits that matched at least one dwelling record
 iws_hi_dwell_join_norepeats <- iws_hi_permits %>% 
-  filter(full_taxid %in% allyears_hi_dwell$full_taxid) #6242 rows, 6011 tmks YAY
+  filter(tmk %in% allyears_hi_dwell$tmk)
 
-# now identify permits that donʻt have dwell data, and save 
-
+# Permits with NO dwelling records
 iws_hi_NOdwell <- iws_hi_permits %>% 
-  filter(full_taxid %!in% iws_hi_dwell_join$full_taxid) # 1105
+  filter(tmk %!in% iws_hi_dwell_join$tmk)
 
-write_csv(iws_hi_NOdwell,
-         file.path(driver_dir,"4_OSDS_N_Runoff/output-data/qaqc/hi_iwspermits_nodwellinginfo.csv"))
+# ==============================================================================
+# 4. EXPORT QA FILE
+# ==============================================================================
 
+out_dir <- file.path(driver_dir, "4_OSDS_N_Runoff/intermediate/step2-clean-permit-data")
+
+
+write_csv(
+  iws_hi_NOdwell,
+  file.path(out_dir, "hi_iwspermits_nodwellinginfo.csv")
+)
+
+cat("Step 2 Part 1 Complete:\n")
+cat("- Total Big Island Permits:", nrow(iws_hi_permits), "\n")
+cat("- Permits matched to Dwelling Data:", nrow(iws_hi_dwell_join_norepeats), "\n")
+cat("- Permits missing Dwelling Data saved to QA:", nrow(iws_hi_NOdwell), "\n")
 ```
 
 **Results so Far**:
@@ -469,218 +576,6 @@ are as follows:
 2. Create master list (table 1)
 3. Create tables 2 and 3 based on master list. 
 
-```{r}
-
-library(janitor)
-
-# create a mater clean
-
-
-## osds class assignment function 
-# Define disposal types 
-primary_disposal <- c("Bed", "Trench", "Infiltrators / Chambers", "ET Bed-Irrigation System", "Presby")
-minimal_disposal <- c("Seepage Pit", "Cesspool-New")
-unknown_disposal <- c("Other", "Unknown")
-
-# Class assignment function 
-assign_osds_class <- function(p_type, d_type) {
-  case_when(
-    p_type == "Septic Tank" & d_type %in% primary_disposal ~ "1",
-    p_type == "Septic Tank" & d_type %in% c(minimal_disposal, unknown_disposal) ~ "2",
-    p_type == "Septic Tank" & d_type == "Combination of two types" ~ "1",
-    
-    p_type %in% c("Compost Toilet", "Gray Water System", "Compost Toilet/Gray Water System") & 
-      d_type %in% unknown_disposal ~ "3",
-    p_type %in% c("Compost Toilet", "Compost Toilet/Gray Water System") & d_type == "Bed" ~ "1",
-    p_type == "Gray Water System" & d_type %in% c("Bed", "Trench") ~ "3",
-    
-    p_type == "Aerobic Unit" & d_type %in% primary_disposal ~ "1",
-    p_type == "Aerobic Unit" & d_type %in% minimal_disposal ~ "4",
-    p_type == "Aerobic Unit" & d_type %in% unknown_disposal ~ "3",
-    p_type == "Aerobic Unit" & d_type == "Combination of two types" ~ "1",
-    
-    p_type %in% c("Cesspool-New", "Cesspool-Existing") ~ "4",
-    p_type %in% c("Presby (passive, NSF 40)", "Holding Tank (Government Only)", "Incinerating Toilet") ~ "1",
-    
-    p_type == "Other" & d_type %in% primary_disposal ~ "1",
-    TRUE ~ "1" # Catch-all default based on your manual fix
-  )
-}
-
-
-## clean up permits by adding a year column, assigning osds class, and trying to standardize the address
-
-master_clean <- iws_hi_permits %>%
-  clean_names() %>%
-  mutate(
-    approval_date = mdy(final_approval_date),
-    year = year(approval_date),
-    address_full = if_else(is.na(project_street_address2), 
-                           project_street_address, 
-                           paste(project_street_address, "-", project_street_address2)),
-    address_lower = str_trim(str_to_lower(address_full)),
-    osds_class = assign_osds_class(permit_type, disposal_type),
-    dwelling_yn = ifelse(tmk %in% iws_hi_NOdwell$TMK,"no","yes")
-  ) %>%
-  select(-permit_id) %>% 
-  distinct() # this removes any EXACT duplicates.
-
-length(unique(master_clean$tmk))
-
-# N rows = 7124 after distinct, 7347 before
-# N tmks = 6818
-
-# now create the three tables - bedroom will not be relevant for the non commercial #
-
-
-### TABLE 1 #########
-
-table1_tmk_registry <- master_clean %>%
-  group_by(full_taxid) %>%
-  summarize(
-    n_permits = n(),
-    n_years = n_distinct(year),
-    n_addresses = n_distinct(address_lower),
-    min_year = min(year),
-    max_year = max(year),
-    is_dwelling = any(full_taxid %in% allyears_hi_dwell$full_taxid),
-    scenario = case_when(
-      n_addresses == 1 & n_permits == 1 ~ "Simple",
-      n_addresses > 1 ~ "Multi-Building",
-      n_years > 1 ~ "Potential Upgrade",
-      TRUE ~ "Multiple Permits Same Year"
-    ),
-    .groups = "drop"
-  )
-
-
-#### TABLE 2 A and 2 B ########
-
-table2a_bedrooms <- allyears_hi_dwell %>%
-  filter(full_taxid %in% master_clean$full_taxid) %>%
-  mutate(rmbed = as.numeric(rmbed)) %>%
-  group_by(full_taxid, taxyr) %>%
-  summarize(
-    total_beds = sum(rmbed, na.rm = TRUE),
-    # mode_beds = calc_mode(rmbed, na.rm = TRUE), # Uncomment if you want mode instead
-    .groups = "drop"
-  ) %>%
-  pivot_wider(names_from = taxyr, values_from = total_beds, names_sort = TRUE) %>% 
-  rename(tmk = full_taxid) %>% 
-  rename_with(~ paste0("beds_", .), matches("^[0-9]"))
-
-
-table2b_bedrooms <- allyears_hi_dwell %>%
-  filter(full_taxid %in% master_clean$full_taxid) %>%
-  mutate(rmbed = as.numeric(rmbed)) %>%
-  group_by(full_taxid, taxyr) %>%
-  summarize(
-    #total_beds = sum(rmbed, na.rm = TRUE),
-    mode_beds = calc_mode(rmbed, na.rm = TRUE), # Uncomment if you want mode instead
-    .groups = "drop"
-  ) %>%
-  pivot_wider(names_from = taxyr, values_from = mode_beds, names_sort = TRUE) %>% 
-  rename(tmk = full_taxid)
-
-#### TABLE 3 ####
-
-table3_classes <- master_clean %>%
-  group_by(full_taxid, year) %>%
-  summarize(
-    all_classes_text = paste(sort(unique(osds_class)), collapse = ", "),
-    .groups = "drop"
-  ) %>%
-  mutate(encoded_sum = 
-    (str_detect(all_classes_text, "1") * 1) +
-    (str_detect(all_classes_text, "2") * 2) +
-    (str_detect(all_classes_text, "3") * 4) +
-    (str_detect(all_classes_text, "4") * 8)
-  ) %>%
-  select(full_taxid, year, encoded_sum) %>%
-  pivot_wider(names_from = year, values_from = encoded_sum, names_sort = TRUE) %>% 
-  rename_with(~ paste0("osds_cl_", .), matches("^[0-9]")) %>% 
-  rename(tmk = full_taxid)
-
-# Filter out Commercial, ie dwell = no
-
-table1_tmk_registry_commercial <- table1_tmk_registry %>% 
-  filter(is_dwelling == FALSE)
-
-```
-
-```{r}
-### Save
-
-write_csv(table1_tmk_registry,
-          file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/hi_tables/table1_tmk_registry_all.csv"))
-
-write_csv(table2a_bedrooms,
-          file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/hi_tables/table2a_bedrooms_sum.csv"))
-
-write_csv(table2b_bedrooms,
-          file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/hi_tables/table2b_bedrooms_mode.csv"))
-
-write_csv(table3_classes,
-          file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/hi_tables/table3_class_allcsv"))
-
-
-## Read back in
-
-hi_table1 <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/hi_tables/table1_tmk_registry_all.csv"))
-
-table2a_bedrooms <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/hi_tables/table2a_bedrooms_sum.csv")) %>% 
-  rename(tmk = full_taxid)
-
-table3_classes <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/hi_tables/table3_class_allcsv")) %>% 
-  rename(tmk = full_taxid)
-```
-
-Ok so this works beautifully in that the bedroom table does not include any commercial tmks. Those will have their own table, which will specify "place", which dictates effluent, which 
-
-
-
-
-## Step 3: Compare to Past Datasets to Complete the Time Series
-
-```{r}
-
-hi_otp <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/large-input-data/OSDS_HIGIS_2010/On-site_Sewage_Disposal_Systems_-_Hawaii_Island.csv"))
-
-unique(hi_otp$class) # weirdly this has no 4
-
-```
-
-So the Hawaii database has a similar format to the others, but also has a column with "source", indicating that someone has already gone through the processes of bringing in additional information for TMKS not in the Dwelling Assessment. This means that we should use this for our "mismatches" in the new data. There are also notes for all the commercial properties which is great!
-
-UNFORTUNATELY there is no information about how effluent was calculated for non dwells as far as I can tell, but maybe some snooping around later will fix that. And, is a good reason to apply a standardized approach that matches the other islands.
-
-According to the page: Source =  State of Hawaii Department of Health, May, 2017.
-
-We also have these! Which are helpful:
-
-PITT Code Values:   0  Timeshare (Maui only)   100’s*  Improved Residential   200’s  Apartment   300’s  Commercial   400’s  Industrial   500’s  Agricultural and Rural   600’s   Conservation   700’s   Hotel and Resort   800’s**  Unimproved Residential   900’s  Homeowner    999   Multiple PITT Codes for a single TMK   1000’s  Commercialized Residential (Maui only)      *  Kauai:  100 = Improved and Unimproved Residential   **  Kauai:  800 = Homestead Properties 
-
-Also: lots of -9999 in class? And no class 4 or 5. That makes no sense. 
-
-Some of this data is messy and yuck but there is also a lot of helpful work that it looks like the department of health did in 2017 (or Joey did?) 
-
-Another weird thing about this data is that they dropped the year column. 
-
-We only have classes 1 - 4 in this data. From the metadata, this
-represents:
-
--   CLASS_I: Class I OSDS are those systems where the effluent is
-    subjected to soil treatment
--   CLASS_II: Class II OSDS are septic systems discharging to a seepage
-    pit.\
--   CLASS_III: Class III OSDS are aerobic systems discharging to a
-    seepage pit.
--   CLASS_IV: Class IV OSDS are cesspools.\
--   EFFLUENT: The total effluent flux in million gallons per day
-    discharged within the TMK parcel.
-    
-    
-The `osds_class` column also does not have any 4s, just 1-3, and -9999. I'll use the same additive coding here as I did with Maui Nui, Kauai (and eventually Oahu): 
 
 #### Wastewater Class Encoding Reference Table
 
@@ -703,927 +598,982 @@ The `osds_class` column also does not have any 4s, just 1-3, and -9999. I'll use
 | **All (1, 2, 3, 4)** | 15 | Full suite of permits |
 
 
+```{r new-tables}
 
-```{r}
+library(tidyverse)
 library(janitor)
+library(lubridate)
 
-hi_otp_clean <- hi_otp %>% 
-  clean_names() %>% 
-  select(tmk, starts_with("class"), "osds_qty") # n = 13351 
-
-# apply additive encoding to match what we did with the new data
-
-hi_otp_class_enc <- hi_otp_clean %>% 
-  select(-class) %>% 
-  pivot_longer(cols = starts_with("class"), names_to = "class", values_to = "quantity") %>% 
-  filter(quantity != 0) %>% 
-  rename(ttl_osds_2010 = osds_qty) %>% 
-  mutate(osds_class_otp = case_when(
-    class == "class_iv" ~ 8, # cesspool 
-    class == "class_iii" ~ 4,
-    class == "class_ii" ~ 2,
-    class == "class_i" ~ 1
-  )) %>%
-  pivot_wider(id_cols = c("tmk","ttl_osds_2010"), names_from = "class", values_from = c("osds_class_otp")) %>%
-  mutate(encoded_sum = rowSums(across(starts_with("class")), na.rm = TRUE))
-  
-
-# read in table 1. 
-
-IWS_table1_tmk_registry <- read.csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/hi_tables/table1_tmk_registry_all.csv"))
-
-
-# Step 1: Split into three groups: NEW, UPDATED and UNCHANGED
-
-otp_with_updates <- hi_otp_class_enc %>% 
-  mutate(tmk = as.integer(tmk)) %>% 
-  filter(tmk %in% IWS_table1_tmk_registry$full_taxid) # 2050 # add flag
-
-
-otp_unchanged <- hi_otp_class_enc %>% 
-  mutate(tmk = as.integer(tmk)) %>% 
-  filter(tmk %!in% IWS_table1_tmk_registry$full_taxid) # 51009
-
-
-new_permits <- IWS_table1_tmk_registry %>% 
-  filter(full_taxid %!in% hi_otp_class_enc$tmk) # 4313 # flag
-
-# add flags to the tmk registry in table 1 for UPDATES and NEW. 
-
-IWS_table1_tmk_registry_wflags <- IWS_table1_tmk_registry %>% 
-  mutate(status_since_otp = case_when(
-    full_taxid %!in% otp_with_updates$tmk ~ "new permit application",
-    full_taxid %in% otp_with_updates$tmk ~ "exists in otp",
-    TRUE ~ "Z"
-  )) %>% 
-  rename(tmk = full_taxid)
-
-
-# Create master tmk list separate from everything else. 
-
-# --- prep tmk lists  ---
-# Ensure both are integers for a perfect match
-otp_ids <- as.integer(hi_otp_class_enc$tmk)
-iws_ids <- as.integer(IWS_table1_tmk_registry$full_taxid)
-
-# --- create master list 
-master_tmk_registry <- data.frame(tmk = union(otp_ids, iws_ids)) %>%
-  mutate(
-    # 1. Was it in the original 2010 OTP?
-    in_otp = tmk %in% otp_ids,
-    
-    # 2. Does it have a newer IWS permit?
-    in_iws = tmk %in% iws_ids,
-    
-    # 3. Create your 3 Granular Categories
-    status_category = case_when(
-      in_otp & in_iws  ~ "Existing OTP: Updated with New Permit",
-      in_otp & !in_iws ~ "Existing OTP: Unchanged (No new permit)",
-      !in_otp & in_iws ~ "New Property: First Permit since OTP",
-      TRUE             ~ "Unknown/Error"
-    )
-  )
-
-
-
-```
-
-##### Unchanged OSDS since OTP
-
-```{r unchanged clean}
-
-# --------------- Unchanged Data: Data Reshape and Merge ------------------------------------- #
-
-# Here I take the tmks present in OTP that have not changed and reshape it to match the table 1, table 2 and table 3 datasets above. Add a flag, and then join to the rest. Columsn we need:
-
-# - tmk
-# - n permits (this is captured in the encoding)
-# - n years (all one)
-# - n addresses - we dont have address but we do have pittcodes
-# - min and max year = 2009
-# - dwelling flag = get from old data
-# - scenario
-# - status since otp = unchanged 
-
-
-# ---------------- FIRST: Retrieve bedroom # for years after OTP ------------------- #
-
-# Even if the permit didn't change, the dwelling may have. This would increase the effluent and therefore influence of that osds
-
-
-# function to go get and read in each text file, parse, and filter
-read_and_filter_hi_dwell <- function(year, driver_dir, col_specs, tmks_permits) {
-  file_path <- file.path(driver_dir,
-                         "4_OSDS_N_Runoff/large-input-data/Dwelling_Data_Raw/Hawaii_DwellRaw_12182025",
-                         as.character(year),
-                         "DWELDAT.TXT")
-  
-  read_fwf(file_path,
-           col_positions = col_specs,
-           na = c("", "NA"),
-           col_types = cols(.default = col_character())) %>%
-    mutate(across(everything(), ~trimws(.))) %>%
-    # Rename first two columns
-    rename(jursi_id = 1, tmk = 2) %>%
-    # Create tmk_13 and tmk_9
-    mutate(
-      tmk_13 = paste0(jursi_id, tmk),
-      tmk_9  = substr(tmk_13, 1, nchar(tmk_13) - 4)
-    ) %>%
-    # Filter by the TMKs we care about
-    filter(tmk_9 %in% tmks_permits)
+# Helper: Mode calculation for bedrooms
+calc_mode <- function(x, na.rm = TRUE) {
+  if (na.rm) x <- x[!is.na(x)]
+  if (length(x) == 0) return(NA_real_)
+  ux <- unique(x)
+  ux[which.max(tabulate(match(x, ux)))]
 }
 
-# years
-yearsA <- (2019:2023)
-yearsB <- (2013:2018)
-yearsC <- (2010:2012)
+# Helper: OSDS Class Assignment
+primary_disposal <- c("Bed", "Trench", "Infiltrators / Chambers", "ET Bed-Irrigation System", "Presby")
+minimal_disposal <- c("Seepage Pit", "Cesspool-New")
+unknown_disposal <- c("Other", "Unknown")
 
-# colspecs A and B (above, make sure they are read in)
+assign_osds_class <- function(p_type, d_type) {
+  case_when(
+    p_type == "Septic Tank" & d_type %in% primary_disposal ~ "1",
+    p_type == "Septic Tank" & d_type %in% c(minimal_disposal, unknown_disposal) ~ "2",
+    p_type == "Septic Tank" & d_type == "Combination of two types" ~ "1",
+    
+    p_type %in% c("Compost Toilet", "Gray Water System", "Compost Toilet/Gray Water System") & 
+      d_type %in% unknown_disposal ~ "3",
+    p_type %in% c("Compost Toilet", "Compost Toilet/Gray Water System") & d_type == "Bed" ~ "1",
+    p_type == "Gray Water System" & d_type %in% c("Bed", "Trench") ~ "3",
+    
+    p_type == "Aerobic Unit" & d_type %in% primary_disposal ~ "1",
+    p_type == "Aerobic Unit" & d_type %in% minimal_disposal ~ "4",
+    p_type == "Aerobic Unit" & d_type %in% unknown_disposal ~ "3",
+    p_type == "Aerobic Unit" & d_type == "Combination of two types" ~ "1",
+    
+    p_type %in% c("Cesspool-New", "Cesspool-Existing") ~ "4",
+    p_type %in% c("Presby (passive, NSF 40)", "Holding Tank (Government Only)", "Incinerating Toilet") ~ "1",
+    
+    p_type == "Other" & d_type %in% primary_disposal ~ "1",
+    TRUE ~ "1"
+  )
+}
 
+# ==============================================================================
+# 1. BUILD MASTER CLEAN PERMIT DATASET
+# ==============================================================================
 
-# list of tmks - change name to match dwell data
-
-otp_unchanged_tmks <- otp_unchanged_allinfo %>% select(full_taxid = tmk) #51009 
-otp_UPDATED_allinfo_tmks <- otp_UPDATED_allinfo %>%  select(full_taxid = tmk)
-
-otp_tmks_fordwellquery <- c(otp_unchanged_tmks$full_taxid, otp_UPDATED_allinfo_tmks$full_taxid) #53514
-
-# apply function to years by group
-
-yearsAbyB_list <- map(yearsA, ~read_and_filter_hi_dwell(.x, driver_dir, colspec_B, otp_tmks_fordwellquery))
-yearsAbyB_df <- do.call(rbind, yearsAbyB_list) 
-
-yearsB_list <- map(yearsB, ~read_and_filter_hi_dwell(.x, driver_dir, colspec_B, otp_tmks_fordwellquery))
-yearsB_df <- do.call(rbind, yearsB_list)
-
-yearsCbyA_list <- map(yearsC, ~read_and_filter_hi_dwell(.x, driver_dir, colspec_A, otp_tmks_fordwellquery))
-yearsCbyA_df <- do.call(rbind, yearsCbyA_list)
-
-
-# clean up and bind
-
-otp_dwell_2010_2012 <- yearsCbyA_df %>% 
-  mutate(year_built_fixed = paste0(YRBLT,substr(EFFYR,1,1))) %>% #paste together year and the first character of eff year
-  mutate(effective_year_fixed = paste0(substr(EFFYR,2,nchar(EFFYR)), substr(COND,1,1))) %>% 
-  clean_names() %>% 
-  select(jursi_id,
-         tmk,
-         tmk_9,
-         taxyr,
-         card,
-         fixbath,
-         fixhalf,
-         rmtot,
-         rmbed,
-         yrblt = year_built_fixed,
-         effyr = effective_year_fixed)
-  
-
-
-# select colums needed and bind all together
-
-otp_dwell_2013_2023 <- rbind(yearsAbyB_df, yearsB_df) %>% 
-  clean_names() %>% 
-  select(jursi_id,
-         tmk,
-         tmk_9,
-         taxyr,
-         card,
-         fixbath,
-         fixhalf,
-         rmtot,
-         rmbed,
-         yrblt,
-         effyr)
-
-# bind all together!
-otp_allyears_hi_dwell <- rbind(otp_dwell_2010_2012, otp_dwell_2013_2023) %>% 
-  rename(full_taxid = tmk_9)
-
-# save to dropbox 
-
-
-write_csv(otp_allyears_hi_dwell, 
-          file.path(driver_dir,"4_OSDS_N_Runoff/output-data/dwellings/hi_dwell_clean_2010_2023_otpTMKSonly.csv"))
-
-
-
-# ---------------------------- SECOND: Create the three tables --------------------------- # 
-
-
-otp_unchanged_allinfo <- hi_otp %>%
-  mutate(tmk = as.integer(tmk)) %>% 
-  filter(tmk %in% otp_unchanged$tmk) %>% 
-  select(tmk, commercial, pittcode, ttl_bdrms, no_struct) %>% 
-  left_join(., otp_unchanged, by = "tmk") %>% 
-  select(-starts_with("class")) %>% 
-  mutate(year = 2010)
-
-
-otp_unchanged_table1 <- otp_unchanged_allinfo %>% 
-  mutate(n_permits = case_when(
-    encoded_sum %in% c(1,2,4,8) ~ 1,
-    encoded_sum %in% c(3,5,6,9,10,12) ~ 2,
-    encoded_sum %in% c(7,11,13,14) ~ 3,
-    encoded_sum == 15 ~ 4,
-    TRUE ~ 99999
-  )) %>% 
-  mutate(n_years = 1,
-         n_addresses = "unknown",
-         min_year = 2010,
-         max_year = 2010,
-         is_dwelling = ifelse(commercial == "Apartment/condo" | is.na(commercial),
-                              TRUE,FALSE)) %>%
+master_clean <- iws_hi_permits %>%
+  clean_names() %>%
   mutate(
-      scenario = case_when(
-      n_permits == 1 & n_years == 1 ~ "Simple",
-      n_addresses == "unknown" ~ "Unknown",
+    approval_date = mdy(final_approval_date),
+    year = year(approval_date),
+    address_full = if_else(
+      is.na(project_street_address2), 
+      project_street_address, 
+      paste(project_street_address, "-", project_street_address2)
+    ),
+    address_lower = str_trim(str_to_lower(address_full)),
+    osds_class = assign_osds_class(permit_type, disposal_type),
+    dwelling_yn = if_else(tmk %in% iws_hi_NOdwell$tmk, "no", "yes")
+  ) %>%
+  select(-any_of("permit_id")) %>% 
+  distinct()
+
+# ==============================================================================
+# 2. GENERATE TABLES 1, 2A, 2B, AND 3
+# ==============================================================================
+
+# --- TABLE 1: TMK Registry ---
+table1_tmk_registry <- master_clean %>%
+  group_by(tmk) %>%
+  summarize(
+    n_permits = n(),
+    n_years = n_distinct(year, na.rm = TRUE),
+    n_addresses = n_distinct(address_lower, na.rm = TRUE),
+    min_year = min(year, na.rm = TRUE),
+    max_year = max(year, na.rm = TRUE),
+    is_dwelling = any(tmk %in% allyears_hi_dwell$tmk),
+    scenario = case_when(
+      n_addresses == 1 & n_permits == 1 ~ "Simple",
+      n_addresses > 1 ~ "Multi-Building",
       n_years > 1 ~ "Potential Upgrade",
       TRUE ~ "Multiple Permits Same Year"
     ),
-    status_since_otp = "unchanged since otp") %>% 
-  select(-commercial, -pittcode,-ttl_bdrms, -no_struct, -ttl_osds_2010,-year,-encoded_sum)
+    .groups = "drop"
+  )
 
-# this one WILL include commercial 
-otp_unchanged_table2_2010 <- otp_unchanged_allinfo %>% 
-  select(tmk,year, ttl_bdrms) %>% 
-  pivot_wider(id_cols = tmk,names_from = year, values_from = ttl_bdrms) %>% 
-  mutate(tmk = as.character(tmk)) %>% 
-  rename(OTP_2010 = `2010`)
+table1_tmk_registry_commercial <- table1_tmk_registry %>% 
+  filter(is_dwelling == FALSE)
 
-# this one WON'T include commercial
-otp_unchanged_table2_allyrs <- otp_allyears_hi_dwell %>%
-  filter(full_taxid %in% otp_unchanged_table1$tmk) %>%
+# --- TABLE 2A: Bedroom Counts (Sum) ---
+table2a_bedrooms <- allyears_hi_dwell %>%
+  filter(tmk %in% master_clean$tmk) %>%
   mutate(rmbed = as.numeric(rmbed)) %>%
-  group_by(full_taxid, taxyr) %>%
+  group_by(tmk, taxyr) %>%
   summarize(
     total_beds = sum(rmbed, na.rm = TRUE),
-    # mode_beds = calc_mode(rmbed, na.rm = TRUE), # Uncomment if you want mode instead
     .groups = "drop"
   ) %>%
   pivot_wider(names_from = taxyr, values_from = total_beds, names_sort = TRUE) %>% 
-  rename(tmk = full_taxid)
+  rename_with(~ paste0("beds_", .), matches("^[0-9]"))
 
-# all dwellings together - what drops out goes to table 4
-
-possible_commercial_tmks <- setdiff(otp_unchanged_table2_2010$tmk, otp_unchanged_table2_allyrs$tmk)
-
-
-
-# class
-  
-otp_unchanged_table3 <- otp_unchanged_allinfo %>% 
-  select(tmk,year, encoded_sum) %>% 
-  pivot_wider(id_cols = tmk,names_from = year, values_from = encoded_sum) %>% 
-  rename_with(~ paste0("osds_cl_", .), matches("^[0-9]"))
-  
-# filter out the dwells that that didnt match in table 2 all years, see if they all have place assigment
-
-
-otp_unchanged_table4_draft <- otp_unchanged_allinfo %>% 
-  select(tmk, year, pitt_code = pittcode, commercial, ttl_bdrms) %>% 
-  filter(tmk %in% possible_commercial_tmks) %>% 
-  mutate(comm_assignment = case_when(
-    # Exact Matches (High Priority)
-    pitt_code == 0    ~ "Timeshare (Maui only)",
-    pitt_code == 999  ~ "Multiple PITT Codes",
-    
-    # kauai Specifics (Assumes you have a 'county' column)
-    # county == "Kauai" & pitt_code == 100 ~ "Improved and Unimproved Residential",
-    # county == "Kauai" & pitt_code == 800 ~ "Homestead Properties",
-
-    # Range Matches (The "Hundreds")
-    pitt_code >= 1000 ~ "Commercialized Residential (Maui only)",
-    pitt_code >= 100 & pitt_code < 200 ~ "Improved Residential",
-    pitt_code >= 200 & pitt_code < 300 ~ "Apartment",
-    pitt_code >= 300 & pitt_code < 400 ~ "Commercial",
-    pitt_code >= 400 & pitt_code < 500 ~ "Industrial",
-    pitt_code >= 500 & pitt_code < 600 ~ "Agricultural and Rural",
-    pitt_code >= 600 & pitt_code < 700 ~ "Conservation",
-    pitt_code >= 700 & pitt_code < 800 ~ "Hotel and Resort",
-    pitt_code >= 800 & pitt_code < 900 ~ "Unimproved Residential",
-    pitt_code >= 900 & pitt_code < 999 ~ "Homeowner",
-    
-    # Catch-all for anything else
-    TRUE ~ "Unknown"
-  ))
-
-table4_summary <- otp_unchanged_table4_draft %>% 
-  group_by(comm_assignment) %>% 
+# --- TABLE 2B: Bedroom Counts (Mode) ---
+table2b_bedrooms <- allyears_hi_dwell %>%
+  filter(tmk %in% master_clean$tmk) %>%
+  mutate(rmbed = as.numeric(rmbed)) %>%
+  group_by(tmk, taxyr) %>%
   summarize(
-    types = length(tmk)
-  )
+    mode_beds = calc_mode(rmbed, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  pivot_wider(names_from = taxyr, values_from = mode_beds, names_sort = TRUE) %>% 
+  rename_with(~ paste0("beds_", .), matches("^[0-9]"))
 
-# ------------------ It looks like someone has really put in the work here to figure out what is a dwelling and what isn't. Therefore, we'll re-assign TMKS that have bedrooms back into table 2. Anything that has a commercial assignment and bedrooms = 0, goes into table 4 ----------- #
-
-addons_fortable2 <- otp_unchanged_table4_draft %>% 
-  filter(is.na(commercial) & ttl_bdrms != 0) %>% 
-  select(tmk, pitt_assigment = comm_assignment)
-  #pivot_wider(id_cols = tmk, names_from = year, values_from = ttl_bdrms)# 2811. The only issue with these is that we dont have year built or year this was added into the database. so we'll assume they are active, but that may be an over inflation. ADD FLAG to TABLE 1!  
-
-# Make sure all of the add ons area already in table 2
-table_2_check <- otp_unchanged_table2_2010 %>% 
-  filter(tmk %in% addons_fortable2$tmk)
-
-# Add confirmed commercial to table 4
-otp_unchanged_table4_cl <- otp_unchanged_table4_draft %>% 
-  filter(!is.na(commercial) & ttl_bdrms == 0) %>%
-  pivot_wider(id_cols = tmk,names_from = year, values_from = commercial) %>% 
-  mutate(tmk = as.character(tmk))
-
-# Merge new and old bedroom data to complete table 2. 
-# Manually filter out confirmed commercial, and apply gap fill logic:
-## if OTP data has nothing, and dwell have nothing, check google places
-## if OTP data has something and dwell have nothing, gapfill with OTP data
+# --- TABLE 3: Encoded OSDS Permit Classes by Year ---
+table3_classes <- master_clean %>%
+  filter(!is.na(year)) %>% 
+  group_by(tmk, year) %>%
+  summarize(
+    all_classes_text = paste(sort(unique(osds_class)), collapse = ", "),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    encoded_sum = 
+      (str_detect(all_classes_text, "1") * 1) +
+      (str_detect(all_classes_text, "2") * 2) +
+      (str_detect(all_classes_text, "3") * 4) +
+      (str_detect(all_classes_text, "4") * 8)
+  ) %>%
+  select(tmk, year, encoded_sum) %>%
+  pivot_wider(names_from = year, values_from = encoded_sum, names_sort = TRUE) %>% 
+  rename_with(~ paste0("osds_cl_", .), matches("^[0-9]"))
 
 
-otp_unchanged_table2_2010_complete <- otp_unchanged_table2_allyrs %>% 
-  full_join(otp_unchanged_table2_2010, by = "tmk") %>% 
-  filter(tmk %!in% otp_unchanged_table4_cl$tmk) %>% 
-  rename_with(~ paste0("new_", .), matches("^[0-9]")) %>% 
-  mutate(gapfill_flag = if_else(
-    OTP_2010 != 0 & rowSums(pick(starts_with("new_")) != 0, na.rm = TRUE) == 0,
-    "Gap-filled with OTP value", 
-    "Original dwell data"
-  )) %>% 
-  mutate(across(starts_with("new_"), ~ {
-    # 1. helpers to check the state of ALL new columns for that row
-    # (use 'cur_data()' to look at the other columns in the same row)
-    row_all_na <- rowSums(!is.na(pick(starts_with("new_")))) == 0
-    row_all_zero_or_na <- rowSums(pick(starts_with("new_")) != 0, na.rm = TRUE) == 0
+# --- TABLE 4: Encoded OSDS Permit Classes by Year ---
+
+# ==============================================================================
+# 3. EXPORT TABLES
+# ==============================================================================
+
+out_dir <- file.path(driver_dir, "4_OSDS_N_Runoff/intermediate/step2-clean-permit-data")
+dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+
+write_csv(table1_tmk_registry, file.path(out_dir, "hi_table1_tmk_registry_all.csv"))
+write_csv(table2a_bedrooms,     file.path(out_dir, "hi_table2a_bedrooms_sum.csv"))
+write_csv(table2b_bedrooms,     file.path(out_dir, "hi_table2b_bedrooms_mode.csv"))
+write_csv(table3_classes,       file.path(out_dir, "hi_table3_class_all.csv"))
+write_csv(table1_tmk_registry_commercial,    file.path(out_dir, "hi_table1_tmk_registry_commercial.csv"))
+
+# ==============================================================================
+# 4. READ BACK IN VERIFICATION
+# ==============================================================================
+
+hi_table1      <- read_csv(file.path(out_dir, "hi_table1_tmk_registry_all.csv"), col_types = cols(.default = "c"))
+table2a_beds  <- read_csv(file.path(out_dir, "hi_table2a_bedrooms_sum.csv"), col_types = cols(.default = "c"))
+table3_classes <- read_csv(file.path(out_dir, "hi_table3_class_all.csv"), col_types = cols(.default = "c"))
+
+```
+
+Ok so this works beautifully in that the bedroom table does not include any commercial tmks. Those will have their own table, which will specify "place", which dictates effluent, which 
+
+
+## Step 3: Compare to Past Datasets to Complete the Time Series
+
+```{r}
+
+hi_otp <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/large-input-data/OSDS_HIGIS_2010/On-site_Sewage_Disposal_Systems_-_Hawaii_Island.csv"))
+
+unique(hi_otp$class) # weirdly this has no 4? but the class column iV is there
+
+```
+
+So the Hawaii database has a similar format to the others, but also has a column with "source", indicating that someone has already gone through the processes of bringing in additional information for TMKS not in the Dwelling Assessment. This means that we should use this for our "mismatches" in the new data. There are also notes for all the commercial properties which is great!
+
+UNFORTUNATELY there is no information about how effluent was calculated for non dwells as far as I can tell, but maybe some snooping around later will fix that. And, is a good reason to apply a standardized approach that matches the other islands.
+
+According to the page: Source =  State of Hawaii Department of Health, May, 2017.
+
+We also have these! Which are helpful:
+
+PITT Code Values:   0  Timeshare (Maui only)   100’s*  Improved Residential   200’s  Apartment   300’s  Commercial   400’s  Industrial   500’s  Agricultural and Rural   600’s   Conservation   700’s   Hotel and Resort   800’s**  Unimproved Residential   900’s  Homeowner    999   Multiple PITT Codes for a single TMK   1000’s  Commercialized Residential (Maui only)      *  Kauai:  100 = Improved and Unimproved Residential   **  Kauai:  800 = Homestead Properties 
+
+Also: lots of -9999 in class? And no class 4 or 5. That makes no sense. 
+
+Some of this data is messy and yuck but there is also a lot of helpful work that it looks like the department of health did in 2017 (or Joey did?) 
+
+Another weird thing about this data is that they dropped the year column. 
+
+We only have classes 1 - 3 in this data. From the metadata, this
+represents:
+
+-   CLASS_I: Class I OSDS are those systems where the effluent is
+    subjected to soil treatment
+-   CLASS_II: Class II OSDS are septic systems discharging to a seepage
+    pit.\
+-   CLASS_III: Class III OSDS are aerobic systems discharging to a
+    seepage pit.
+-   CLASS_IV: Class IV OSDS are cesspools.\
+-   EFFLUENT: The total effluent flux in million gallons per day
+    discharged within the TMK parcel.
     
-    case_when(
-      # condition 1: legacy is 0 and all new are NA -> Do nothing (keep as is)
-      OTP_2010 == 0 & row_all_na ~ .,
-      
-      # condition 2: legacy != 0 AND (all are 0 OR all are NA) -> Use legacy
-      OTP_2010 != 0 & row_all_zero_or_na ~ OTP_2010,
-      
-      # condition 3: some are NA but others > 0 -> Do nothing (keep as is)
-      # (This is handled by the default behavior of case_when)
-      TRUE ~ .
+    
+The `osds_class` column also does not have any 4s, just 1-3, and -9999. I'll use the same additive coding here as I did with Maui Nui, Kauai (and eventually Oahu): 
+
+### Unchanged OSDS since OTP
+
+```{r unchanged}
+
+library(tidyverse)
+library(janitor)
+
+'%!in%' <- Negate('%in%')
+
+# ==============================================================================
+# 1. ENCODE BASELINE 2010 HIGIS OTP CLASSES
+# ==============================================================================
+
+hi_otp_clean <- otp_hawaii_raw %>% 
+  clean_hawaii_tmk("tmk") %>% 
+  select(tmk, starts_with("class"), osds_qty, commercial, pittcode, ttl_bdrms, no_struct)
+
+hi_otp_class_enc <- hi_otp_clean %>% 
+  pivot_longer(
+    cols = starts_with("class"), 
+    names_to = "class_name", 
+    values_to = "quantity"
+  ) %>% 
+  filter(!is.na(quantity) & as.numeric(quantity) > 0) %>% 
+  mutate(
+    osds_class_val = case_when(
+      class_name %in% c("class_iv", "class4") ~ 8, # Cesspool
+      class_name %in% c("class_iii", "class3") ~ 4, # Aerobic / Class III
+      class_name %in% c("class_ii", "class2") ~ 2, # Septic Class II
+      class_name %in% c("class_i", "class1")  ~ 1, # Septic Class I
+      TRUE ~ 0
     )
-  }))
+  ) %>% 
+  group_by(tmk) %>% 
+  summarize(
+    encoded_sum = sum(osds_class_val, na.rm = TRUE),
+    ttl_osds_2010 = first(osds_qty),
+    commercial = first(commercial),
+    pittcode = first(pittcode),
+    ttl_bdrms = suppressWarnings(max(as.numeric(ttl_bdrms), na.rm = TRUE)),
+    .groups = "drop"
+  ) %>% 
+  mutate(ttl_bdrms = if_else(is.infinite(ttl_bdrms), 0, ttl_bdrms))
 
-# pull tmks to add flags 
-tmks_tocheck_googplaces <- otp_unchanged_table2_2010_complete %>%
-  filter(OTP_2010 == 0 & rowSums(!is.na(pick(starts_with("new_")))) == 0) %>%
-  pull(tmk)
+# ==============================================================================
+# 2. PARTITION UNCHANGED TMKs
+# ==============================================================================
 
-legacy_used_tmks <- otp_unchanged_table2_2010_complete %>%
-  filter(gapfill_flag == "Gap-filled with OTP value") %>% 
-  pull(tmk)
+# Baseline TMKs NOT found in 2009-Present IWS permits. Run Step 0 for this
+otp_unchanged <- hi_otp_class_enc %>% 
+  filter(tmk %in% hawaii_unchanged$tmk)
 
-otp_unchanged_table2_2010_complete_cl <- otp_unchanged_table2_2010_complete %>% 
-  select(-OTP_2010, -gapfill_flag)
+# --- UNCHANGED TABLE 1 ---
 
-# Add flags to Registry!
+hi_dwell_card_summary <- allyears_hi_dwell %>%
+  group_by(tmk) %>%
+  summarize(
+    n_buildings = if ("card" %in% names(.)) n_distinct(card, na.rm = TRUE) else 1,
+    in_dwelldat = any(!is.na(taxyr) & taxyr != ""),
+    .groups = "drop"
+  ) %>% 
+  ungroup() 
 
-otp_unchanged_table1_final <- otp_unchanged_table1 %>% 
-  left_join(., addons_fortable2, by = "tmk") %>% 
-  mutate(gapfill_flag = case_when(
-    tmk %in% tmks_tocheck_googplaces ~ "Run through Google Places",
-    tmk %in% legacy_used_tmks ~ "Gapfilled with OTP value",
-    TRUE ~ NA
-  )) %>% 
-  rename(pitt_assignment = pitt_assigment)
+hi_table1_unchanged <- otp_unchanged %>% 
+  mutate(
+    n_permits = case_when(
+      encoded_sum %in% c(1, 2, 4, 8) ~ 1,
+      encoded_sum %in% c(3, 5, 6, 9, 10, 12) ~ 2,
+      encoded_sum %in% c(7, 11, 13, 14) ~ 3,
+      encoded_sum == 15 ~ 4,
+      TRUE ~ 1
+    ),
+    n_years = 1,
+    n_addresses = "1",
+    min_year = 2010,
+    max_year = 2010,
+    is_dwelling = if_else(is.na(commercial) | commercial == "Apartment/condo", TRUE, FALSE),
+    status_since_otp = "unchanged since otp",
+    scenario = "No new permits"
+  ) %>% 
+  left_join(hi_dwell_card_summary, by = "tmk") %>% 
+  select(
+    tmk,
+    starts_with("n_"),
+    min_year,
+    max_year,
+    in_dwelldat,
+    status_since_otp,
+    scenario,
+    n_buildings
+  ) %>% 
+  distinct(tmk, .keep_all = TRUE)
+
+# --- UNCHANGED TABLE 2 (Bedrooms with Baseline Gapfill) ---
+
+hi_dwell_unchanged <- allyears_hi_dwell %>% 
+  filter(tmk %in% otp_unchanged$tmk) %>% 
+  mutate(rmbed = as.numeric(rmbed)) %>%
+  group_by(tmk, taxyr) %>% 
+  summarize(total_beds = sum(rmbed, na.rm = TRUE), .groups = "drop") %>% 
+  pivot_wider(names_from = taxyr, values_from = total_beds, names_sort = TRUE) %>% 
+  rename_with(~ paste0("bedrooms_", .), matches("^[0-9]"))
+
+hi_table2_unchanged <- otp_unchanged %>% 
+  filter(is.na(commercial)) %>% 
+  select(tmk, OTP_2010_beds = ttl_bdrms) %>% 
+  left_join(hi_dwell_unchanged, by = "tmk") %>% 
+  mutate(
+    gapfill_flag = if_else(
+      OTP_2010_beds > 0 & rowSums(pick(starts_with("bedrooms_")), na.rm = TRUE) == 0,
+      "Gap-filled with OTP value",
+      "Original dwell data"
+    )
+  ) %>% 
+  mutate(across(starts_with("bedrooms_"), ~ if_else(gapfill_flag == "Gap-filled with OTP value", OTP_2010_beds, .x))) %>% 
+  select(-OTP_2010_beds)
+
+# --- UNCHANGED TABLE 3 (Baseline Classes) ---
+hi_table3_unchanged <- otp_unchanged %>% 
+  select(tmk, osds_class_pre2009 = encoded_sum)
+
+# --- UNCHANGED TABLE 4 (Commercial Draft) ---
+hi_table4_unchanged_draft <- otp_unchanged %>% 
+  filter(!is.na(commercial)) %>% 
+  select(tmk, commercial, pitt_code = pittcode) # 190. a little lpw
+
+# ==============================================================================
+# 3. EXPORT UNCHANGED CSVs
+# ==============================================================================
+
+step3_dir <- file.path(driver_dir, "4_OSDS_N_Runoff/intermediate/step3")
+dir.create(step3_dir, recursive = TRUE, showWarnings = FALSE)
+
+write_csv(hi_table1_unchanged,         file.path(step3_dir, "hi_table1_tmk_registry_UNCHANGED.csv"))
+write_csv(hi_table2_unchanged,         file.path(step3_dir, "hi_table2_bedrooms_UNCHANGED.csv"))
+write_csv(hi_table3_unchanged,         file.path(step3_dir, "hi_table3_classes_UNCHANGED.csv"))
+write_csv(hi_table4_unchanged_draft,   file.path(step3_dir, "hi_table4_commercial_UNCHANGED_draft.csv"))
 
 
-# -------- FINAL STEP: merge in with the NEW IWS permit data we already have ----------------- #
-new_and_unchanged_tmk_registry <- IWS_table1_tmk_registry_wflags %>% 
-  mutate(pitt_assignment = NA,
-         gapfill_flag = NA)  %>% 
-  rbind(.,otp_unchanged_table1_final) %>% 
-  distinct() # this shouldnt drop any rows. yay! note: this should be the full registry now. 
-
-new_and_unchanged_table2 <- otp_unchanged_table2ab %>% 
-  rename_with(~ paste0("beds_", .), matches("^[0-9]")) %>%
-  bind_rows(.,table2a_bedrooms) # does not include commercial. 
-  
-new_and_unchanged_table3 <- otp_unchanged_table3 %>% 
-  mutate(tmk = as.character(tmk)) %>% 
-  bind_rows(.,table3_classes) # includes commercial
-
-# Save tables we will return to later to update. 
-
-write_csv(new_and_unchanged_tmk_registry,
-          file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/hi_tables/table1_tmk_registry_NEW_and_UNCHANGED.csv"))
-
-write_csv(new_and_unchanged_table2,
-          file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/hi_tables/table2_bedrooms_NEW_and_UNCHANGED.csv"))
-
-write_csv(new_and_unchanged_table3,
-          file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/hi_tables/table3_classes_NEW_and_UNCHANGED.csv"))
-
-write_csv(otp_unchanged_table4_cl,
-          file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/hi_tables/table4_commercial_UNCHANGED_only.csv"))
 ```
 
 Note for later: final Table 4 should have about 807 entries to match TMK registry. 386 will be unchanged, the rest will either new or updated. 
 
-#### Updated OTP
+### Updated OTP
 
 This one is a bit more complex. These tmks are already accounted for in our Tables 1 - 3 above, because they are updates. But, we want to know what those updates were. We also want to resolve any conflicts between new and old data. 
 
 Like above, the person who updated this in 2017 may have had additional information that we do not get from the dwell data. 
 
 
-``` {r updated}
+```{r updated}
 
+library(tidyverse)
+library(janitor)
 
-# --------------- Updated Data: Compare, Reshape Merge ------------------------------------- #
+'%!in%' <- Negate('%in%')
 
+# Set output directory for intermediate Step 3 files
+step3_dir <- file.path(driver_dir, "4_OSDS_N_Runoff/intermediate/step3")
+dir.create(step3_dir, recursive = TRUE, showWarnings = FALSE)
 
-# # pivot this wider and check:
-# # - if all tmks are in the iws registry (table 1)
-# - re name columns to clarify they are from otp era (done)
-# # - compare with new data
-# # - create flag for gapfill 
-# # - create flag of scenario: update, and specifically call out cesspool update
+# ==============================================================================
+# 0. IDENTIFY BASELINE UPDATED TMKs
+# ==============================================================================
 
-otp_UPDATED_allinfo <- hi_otp %>%
-  mutate(tmk = as.integer(tmk)) %>% 
-  filter(tmk %in% otp_with_updates$tmk) %>% 
-  select(tmk, commercial, pittcode, ttl_bdrms, no_struct) %>% 
-  left_join(., otp_with_updates, by = "tmk") %>% 
-  select(-starts_with("class"), -pittcode, -no_struct) %>% 
-  mutate(year = 2010) %>% 
-  rename_with(., ~paste0("otp_",.x), .cols= !tmk)
+# TMKs in 2010 HIGIS OTP that ALSO have new IWS permits (2009–Present)
+hi_updated_baseline <- hi_otp_class_enc %>% 
+  filter(tmk %in% iws_hi_permits$tmk)
 
+# ==============================================================================
+# 1. BEDROOM GAP-FILL & TREND LOGIC (BIG ISLAND)
+# ==============================================================================
 
-table_2_2010 <- table2a_bedrooms %>% 
-  rename_with(., ~paste0("newbeds_",.x), .cols= !tmk) %>% 
-    mutate(tmk = as.integer(tmk))
+# Read Step 2 permit bedroom data
+table_2_new <- read_csv(
+  file.path(driver_dir, "4_OSDS_N_Runoff/intermediate/step2-clean-permit-data/hi_table2a_bedrooms_sum.csv"),
+  col_types = cols(.default = "c")
+) %>% 
+  mutate(tmk = as.character(tmk))
 
-# check: are all the "updated" tmks already in table 2?
+hi_updated_forjoin <- hi_updated_baseline %>% 
+  select(tmk, any_of(c("pittcode", "pitt_code")), commercial, ttl_bdrms) %>% 
+  rename(
+    otp_ttl_bdrms = ttl_bdrms,
+    pitt_code = any_of(c("pittcode", "pitt_code"))
+  ) %>% 
+  mutate(
+    otp_ttl_bdrms = as.numeric(otp_ttl_bdrms),
+    pitt_code_num = as.numeric(pitt_code),
+    comm_assignment = case_when(
+      pitt_code_num == 0                               ~ "Timeshare",
+      pitt_code_num == 999                             ~ "Multiple PITT Codes",
+      pitt_code_num >= 1000                            ~ "Commercialized Residential",
+      pitt_code_num >= 100 & pitt_code_num < 200      ~ "Improved Residential",
+      pitt_code_num >= 200 & pitt_code_num < 300      ~ "Apartment",
+      pitt_code_num >= 300 & pitt_code_num < 400      ~ "Commercial",
+      pitt_code_num >= 400 & pitt_code_num < 500      ~ "Industrial",
+      pitt_code_num >= 500 & pitt_code_num < 600      ~ "Agricultural and Rural",
+      pitt_code_num >= 600 & pitt_code_num < 700      ~ "Conservation",
+      pitt_code_num >= 700 & pitt_code_num < 800      ~ "Hotel and Resort",
+      pitt_code_num >= 800 & pitt_code_num < 900      ~ "Unimproved Residential",
+      pitt_code_num >= 900 & pitt_code_num < 999      ~ "Homeowner",
+      TRUE                                             ~ "Unknown"
+    )
+  ) %>% 
+  select(-pitt_code_num)
 
-table2_updated <- table_2_2010 %>% filter(tmk %in% otp_UPDATED_allinfo$tmk)
-# no, missing a 262 (commercial) 
+# Filter permit bedroom table to updated TMKs
+table_2_updated <- table_2_new %>% 
+  filter(tmk %in% hi_updated_forjoin$tmk)
 
+# Join baseline bedroom counts with new permit bedroom data
+hi_updated_withNewbeds <- hi_updated_forjoin %>% 
+  left_join(table_2_updated, by = "tmk") %>% 
+  filter(!is.na(otp_ttl_bdrms) & otp_ttl_bdrms != 0)
 
-table_3_2010 <- table3_classes %>% 
-  #rename(tmk = full_taxid) %>% 
-  rename_with(., ~paste0("new",.x), .cols= !tmk)
+bed_cols <- hi_updated_withNewbeds %>% select(starts_with("beds_")) %>% names()
+latest_bed_col <- if (length(bed_cols) > 0) tail(bed_cols, 1) else NULL
 
-table3_updated <- table3_classes %>% filter(tmk %in% otp_UPDATED_allinfo$tmk) # yes, all accounted for
-
-# create a year match flag
-otp_updated_withIWS <- left_join(otp_UPDATED_allinfo, IWS_table1_tmk_registry_wflags, by = "tmk") %>% 
-  mutate(tmk = as.character(tmk)) %>% 
-  mutate(year_match = ifelse(max_year > 2010, "new permit app","no new permit since 2010"))
-
-# create some flags for different bedroom scenarios
-otp_updated_withNEWbeds <- left_join(otp_UPDATED_allinfo, IWS_table1_tmk_registry_wflags, by = "tmk") %>% 
-  #filter(is_dwelling == TRUE) %>% 
-  left_join(table_2_2010, by = "tmk")
-
-
-year_cols <- otp_updated_withNEWbeds %>% select(starts_with("new")) %>% names()
-
-otp_updated_with_BEDflags <- otp_updated_withNEWbeds %>% mutate(
-     # CREATE MATCH INDEX: 
-    # This finds the index (1, 2, 3...) of the first column that matches OTP bedrooms
-    # We use matrix comparison (df[cols] == df$otp) to keep it vectorized
+hi_updated_withBedFlags <- hi_updated_withNewbeds %>% 
+  mutate(
     match_index = {
-      match_matrix <- pick(all_of(year_cols)) == otp_ttl_bdrms
-      # replace NAs with FALSE so max.col doesn't trip
-      match_matrix[is.na(match_matrix)] <- FALSE 
-      
-      # If a row has at least one match, get the index. Otherwise, NA.
-      if_else(rowSums(match_matrix) > 0, max.col(match_matrix, ties.method = "first"), NA_integer_)
+      if (length(bed_cols) > 0) {
+        match_matrix <- pick(all_of(bed_cols)) == otp_ttl_bdrms
+        match_matrix[is.na(match_matrix)] <- FALSE 
+        if_else(rowSums(match_matrix) > 0, max.col(match_matrix, ties.method = "first"), NA_integer_)
+      } else {
+        NA_integer_
+      }
     },
+    match_name = if (!is.null(latest_bed_col)) bed_cols[match_index] else NA_character_,
     
-    # CREATE MATCH NAME: Convert that index (e.g., 1) into the column name (e.g., "new_2010")
-    match_name = year_cols[match_index],
-    # COLUMN 1: The Match Year Flag
-    # Priority: If it matches, show which one. Otherwise, it's unmatched.
-    # match_status = case_when(
-    #   !is.na(match_index) ~ paste0("Matches with ", match_name),
-    #   TRUE                ~ "Unmatched"
-    #),
-
-    # COLUMN 2: The Direction of Change
-    # Only applies to matches. We compare the OTP legacy to the matched year's value.
+    latest_val = if (!is.null(latest_bed_col)) as.numeric(.data[[latest_bed_col]]) else NA_real_,
     bed_trend = case_when(
-      otp_ttl_bdrms < newbeds_2023  ~ "Expansion since OTP",
-      otp_ttl_bdrms > newbeds_2023  ~ "Shrink - double check",
-      otp_ttl_bdrms == newbeds_2023 ~ "Perfect Match",
+      is.na(latest_val)             ~ NA_character_,
+      otp_ttl_bdrms < latest_val   ~ "Expansion since OTP",
+      otp_ttl_bdrms > latest_val   ~ "Shrink - double check",
+      otp_ttl_bdrms == latest_val  ~ "Perfect Match",
       TRUE                          ~ NA_character_
     ),
-
-    # COLUMN 3: Data Presence (The "All Zeros/NAs" check)
-    # Checks if ALL columns starting with 'NEW' are either 0 or NA
+    
     data_presence = if_else(
-      if_all(starts_with("newbeds"), ~ .x == 0 | is.na(.x)),
+      if_all(starts_with("beds_"), ~ .x == "0" | is.na(.x) | .x == 0),
       "Empty (All 0 or NA)",
       "Bedrooms Recorded"
     )
   )
 
-# remove commercial 
-
-
-updated_table4_draft <- otp_updated_with_BEDflags %>% 
-  filter(!is.na(otp_commercial)) # rows = 190
-
-# get yearbuilt for these tmks
-year_built_for_all <- allyears_hi_dwell %>% 
-  # filter(
-  #   full_taxid %in% otp_updated_withNEWbeds$tmk[otp_updated_withNEWbeds$new_all_zeros == "all zeros"] |
-  #     full_taxid %in% otp_updated_withNEWbeds$tmk[otp_updated_withNEWbeds$flag == "unmatched"]
-  #   ) %>%
-  filter(full_taxid %in% otp_updated_withNEWbeds$tmk) %>% 
-  select(full_taxid, yrblt) %>% 
-  filter(!is.na(yrblt)) %>% 
+# Join Dwelling Build Years for Conservative Gap-Filling
+year_built <- allyears_hi_dwell %>% 
+  filter(tmk %in% hi_updated_withBedFlags$tmk) %>% 
+  select(tmk, year_built = yrblt) %>% 
+  filter(!is.na(year_built) & year_built != "") %>% 
   distinct() %>% 
-  rename(tmk = full_taxid) %>% 
-  group_by(tmk) %>%
+  group_by(tmk) %>% 
   summarize(
-    # str_flatten to join them with a comma
-    year_built_combined = str_flatten(as.character(yrblt), collapse = ", "),
-    #count how many years were found
-    count_buildyears = n()
-  ) %>%
-  ungroup() %>% 
-  mutate(tmk = as.integer(tmk))
+    year_built_combined = str_flatten(as.character(year_built), collapse = ", "),
+    count_buildyears = n(),
+    .groups = "drop"
+  )
 
-# now gapfill the rest. Logic:
-# if NEW are all empty but we do have OTP, add year built and gapfill with OTP from there (mutate 1)
-# if NEW are all empty and opt is empty, google places
-# if disagreement, but yearbuilt matches pattern, then keep the same. 
-
-# which rows to fill with otp number?
-#rows_to_fill <- otp_updated_with_BEDflags$data_presence == "Empty (All 0 or NA)" & otp_updated_with_BEDflags$otp_ttl_bdrms > 0
-
-otp_updated_with_BEDflags_gapfilled <- otp_updated_with_BEDflags %>% 
-  filter(is.na(otp_commercial)) %>%  # now empty = 175
-  left_join(., year_built_for_all, by = "tmk") %>%
-  # 1. Create the flags
+hi_updated_with_BEDflags_gapfilled <- hi_updated_withBedFlags %>% 
+  left_join(year_built, by = "tmk") %>% 
   mutate(
-    gapfill_flag = if_else(data_presence == "Empty (All 0 or NA)" & otp_ttl_bdrms > 0, 
-                           "Gapfilled with OTP value", "Used dwell data")
-  ) %>%
-  # 2. Apply the Gap-fill
-  mutate(across(starts_with("newbeds"), ~ {
+    gapfill_flag = if_else(
+      data_presence == "Empty (All 0 or NA)" & otp_ttl_bdrms > 0, 
+      "Gapfilled with OTP value", 
+      "Used dwell data"
+    )
+  ) %>% 
+  mutate(across(starts_with("beds_"), ~ {
     fill_condition <- data_presence == "Empty (All 0 or NA)" & otp_ttl_bdrms > 0
     if_else(fill_condition, as.numeric(otp_ttl_bdrms), as.numeric(.x))
-  })) %>%
-  # 3. Apply the CONSERVATIVE Year Built Correction
-  mutate(across(starts_with("newbeds"), ~ {
+  })) %>% 
+  mutate(across(starts_with("beds_"), ~ {
     col_year <- as.numeric(str_extract(cur_column(), "\\d{4}"))
+    min_build_yr <- as.numeric(str_extract(year_built_combined, "^\\d{4}"))
     
     case_when(
-      # CONDITION A: If we DID NOT gap-fill this row, leave it exactly as is
-      gapfill_flag == "Used dwell data" ~ as.numeric(.x),
-      
-      # CONDITION B: If we DID gap-fill, but house was built prior to 2010 or unknown, keep it
-      is.na(year_built_combined) | year_built_combined <= 2010 ~ as.numeric(.x),
-      
-      # CONDITION C: If we DID gap-fill AND the house didn't exist yet, set to NA
-      year_built_combined > col_year ~ NA_real_,
-      
-      # Fallback: Keep current value
-      TRUE ~ as.numeric(.x)
+      gapfill_flag == "Used dwell data"                         ~ as.numeric(.x),
+      is.na(min_build_yr) | min_build_yr <= 2010               ~ as.numeric(.x),
+      min_build_yr > col_year                                   ~ NA_real_,
+      TRUE                                                       ~ as.numeric(.x)
     )
   }))
 
-# ----------------------- Table 3 --------------------------------------- #
+table_2_updatedGapfilled <- hi_updated_with_BEDflags_gapfilled %>% 
+  select(tmk, starts_with("beds_"))
 
-# hoping class will be less difficult! we basically are going to check for ones that don't match as well
+bedFlags_forTable1 <- hi_updated_with_BEDflags_gapfilled %>% 
+  select(
+    tmk,
+    bed_trend,
+    data_presence,
+    year_built_combined,
+    count_buildyears,
+    gapfill_flag
+  )
 
+write_csv(table_2_updatedGapfilled, file.path(step3_dir, "hi_table2_updated_gapfilled.csv"))
+write_csv(bedFlags_forTable1,       file.path(step3_dir, "hi_bedflags_fortable1.csv"))
 
-otp_updated_withNEWclasses <- left_join(otp_UPDATED_allinfo, IWS_table1_tmk_registry_wflags, by = "tmk") %>% 
-  #filter(is_dwelling == TRUE) %>% 
-  left_join(table_3_2010, by = "tmk")
+# ==============================================================================
+# 2. OSDS CLASS GAP-FILL & UPGRADE LOGIC (BIG ISLAND)
+# ==============================================================================
 
-# get class cols
-class_cols <- otp_updated_withNEWclasses %>% select(starts_with("new")) %>% names()
-# run match 
-table3_updated_classmatch <- otp_updated_withNEWclasses %>% 
+# Read Step 2 permit OSDS class table
+table_3_new <- read_csv(
+  file.path(driver_dir, "4_OSDS_N_Runoff/intermediate/step2-clean-permit-data/hi_table3_class_all.csv"),
+  col_types = cols(.default = "c")
+) %>% 
+  mutate(tmk = as.character(tmk))
+
+hi_updated_withClassEnc_New <- hi_updated_baseline %>% 
+  select(tmk, otp_encoded_sum = encoded_sum) %>% 
+  left_join(table_3_new, by = "tmk")
+
+class_cols <- hi_updated_withClassEnc_New %>% select(starts_with("osds_cl_")) %>% names()
+
+table3_updated_classmatch <- hi_updated_withClassEnc_New %>% 
   mutate(
-   # CREATE MATCH INDEX: 
-    # This finds the index (1, 2, 3...) of the first column that matches OTP bedrooms
-    # We use matrix comparison (df[cols] == df$otp) to keep it vectorized
     match_index = {
-      match_matrix <- pick(all_of(class_cols)) == otp_encoded_sum
-      # replace NAs with FALSE so max.col doesn't trip
-      match_matrix[is.na(match_matrix)] <- FALSE 
-      
-      # If a row has at least one match, get the index. Otherwise, NA.
-      if_else(rowSums(match_matrix) > 0, max.col(match_matrix, ties.method = "first"), NA_integer_)
+      if (length(class_cols) > 0) {
+        match_matrix <- pick(all_of(class_cols)) == otp_encoded_sum
+        match_matrix[is.na(match_matrix)] <- FALSE 
+        if_else(rowSums(match_matrix) > 0, max.col(match_matrix, ties.method = "first"), NA_integer_)
+      } else {
+        NA_integer_
+      }
     },
-    
-    # CREATE MATCH NAME: Convert that index (e.g., 1) into the column name (e.g., "new_2010")
-    match_name = class_cols[match_index],
-    # COLUMN 1: The Match Year Flag
-    # Priority: If it matches, show which one. Otherwise, it's unmatched.
-    # match_status = case_when(
-    #   !is.na(match_index) ~ paste0("Matches with ", match_name),
-    #   TRUE                ~ "Unmatched"
-    #),
-
-    # COLUMN 3: Data Presence (The "All Zeros/NAs" check)
-    # Checks if ALL columns starting with 'NEW' are either 0 or NA
+    match_name = if (!is.null(class_cols)) class_cols[match_index] else NA_character_,
     data_presence = if_else(
-      if_all(starts_with("new"), ~ .x == 0 | is.na(.x)),
+      if_all(starts_with("osds_cl_"), ~ .x == "0" | is.na(.x) | .x == 0),
       "Empty (All 0 or NA)",
       "OSDS Permit Recorded"
-    )) %>% 
-  unite("class_history", starts_with("new"), sep = "|", remove = FALSE)
+    )
+  )
 
-
-# separate df to create a flag
+# Join Table 1 Registry to examine baseline permit matches
+table_1_new <- read_csv(
+  file.path(driver_dir, "4_OSDS_N_Runoff/intermediate/step2-clean-permit-data/hi_table1_tmk_registry_all.csv"),
+  col_types = cols(.default = "c")
+) %>% 
+  mutate(tmk = as.character(tmk))
 
 update_logic_df <- table3_updated_classmatch %>% 
-  select(tmk, otp_encoded_sum, min_year, max_year, n_addresses, class_history, starts_with("new")) %>% 
-  # change this logic: first define siutation in "new", ie one or two upgrades etc. then compare that to OSDS. 
-  # 
+  left_join(table_1_new, by = "tmk") %>% 
+  select(
+    tmk, otp_encoded_sum, 
+    any_of(c("min_year", "max_year", "n_addresses")), 
+    starts_with("osds_cl_")
+  ) %>% 
   mutate(
     legacy_val = as.numeric(otp_encoded_sum),
-    v2009 = as.numeric(new2009),
-    v2010 = as.numeric(new2010),
-    
+    v2009 = if ("osds_cl_2009" %in% names(.)) as.numeric(osds_cl_2009) else NA_real_,
+    v2010 = if ("osds_cl_2010" %in% names(.)) as.numeric(osds_cl_2010) else NA_real_,
     scenario_match_flag = case_when(
       legacy_val == v2009 | legacy_val == v2010 ~ "matched 2009 or 2010",
-      is.na(v2009) & is.na(v2010) ~ "no data to compare",
-      TRUE ~ "unmatched"
+      is.na(v2009) & is.na(v2010)                 ~ "no data to compare",
+      TRUE                                       ~ "unmatched"
     )
   )
-
-# METHODS NOTE: pre2009 column will retain otp value if there is no data for 2009 or 2010. if it matches what we have in 2009 or 2010, then we will just use those values and put NA in pre2009. 
-
-update_logic_refined <- update_logic_df %>% 
-  mutate(newpre_2009 = case_when(
-    scenario_match_flag == "matched 2009 or 2010" ~ NA_real_,
-    scenario_match_flag == "unmatched" | scenario_match_flag == "no data to compare" ~ as.numeric(legacy_val),
-    TRUE ~ NA_real_
-  )) %>% 
-  select(tmk, newpre_2009, new2009, new2010, starts_with("new_201"), everything()) %>% 
-  select(-class_history) %>% 
-  unite("class_history", starts_with("new"), sep = "|", remove = FALSE) %>% 
-  mutate(unique_story = sapply(str_split(class_history, "\\|"), function(x){
-    x_clean <- x[!is.na(x) & x != "" & x != "NA"] # remove NAs and empty
-    paste(unique(x_clean), collapse = "|")
-  }),
-  # 2. Define the Upgrade Scenarios
-    upgrade_scenario = case_when(
-      # Scenario 0: if empty or has no pipe, just a single state (no change)
-      unique_story == "" | !str_detect(unique_story, "\\|") ~ "no upgrade detected",
-     
-       # Scenario 1: Single Cesspool (8) -> Any Septic/Aerobic (1, 2, or 4)
-      # Regex: Look for 8, followed by anything, ending in 1, 2, or 4
-      str_detect(unique_story, "^8\\|.*[1234]$") ~ "single cesspool upgraded to septic or aerobic",
-      
-      # Scenario 2: REPAIR Starts with 3, ends with 1 or 2
-      str_detect(unique_story, "^3\\|.*[12]$") ~ "multiple septic with new permit: possible repair",
-      
-      # # SCENARIO 3: A "Cleaner" Septic Move (e.g., 2 or 4 upgraded to the "Cleanest" 1)
-      str_detect(unique_story, "^[24]\\|>*1$") ~ "septic or aerobic system refined to cleanest type (Class 1)",
-      
-      # Scenario 3: Multiple OSDS (9-15) -> 1, 2, or 4
-      # Regex: Look for any double-digit number between 9-15 followed by a better class
-      str_detect(unique_story, "^(9|1[0-5])\\|.*[1234]$") ~ "multiple osds with cesspool upgraded",
-      
-      # Scenario 4: Multiple OSDS with cesspool (9 - 15) --> one cesspool 
-      str_detect(unique_story, "^(9|1[0-5])\\|>*8$") ~ "multiple osds with new cesspool application",
-      
-      # DATA ERROR: Ends in 8 or 9 but started with something cleaner (1, 2, or 4)
-      str_detect(unique_story, "^[1234567]\\|.*[8|9|1[0-5]]$") ~ "potential data error: backslide to cesspool",
-      
-      # LATERAL: Started Clean, Ended Clean, but not as Class 1 (e.g., 4|2 or 1|2)
-      str_detect(unique_story, "^[123]\\|.*[123]$") ~ "lateral change (clean to clean)",
-      
-      # Catch-all
-      TRUE ~ "other scenario"
-    )) %>% 
-  mutate(
-    # upgrade_scenario = ifelse(legacy_val == 8 & unique_story == "1", "single cesspool upgraded to septic or aerobic", upgrade_scenario),
-    upgrade_scenario = case_when(
-      unique_story %in% "9|1|8" ~ "cesspool and septic - both repaired, no change",
-      unique_story %in% "10|2|9" ~ "cesspool and septic 2 - septic repaired twice, cesspool once",
-      TRUE ~ upgrade_scenario
-      )
-    )
-
-update_logic_refined %>%
-  filter(upgrade_scenario == "other scenario") %>%
-  distinct(unique_story) %>%
-  print()
-
-# CLEANED UP VERSION
 
 update_logic_refined_cl <- update_logic_df %>% 
-  mutate(newpre_2009 = case_when(
-    scenario_match_flag == "matched 2009 or 2010" ~ NA_real_,
+  mutate(newpre_2009 = as.character(case_when(
+    scenario_match_flag == "matched 2009 or 2010"               ~ NA_real_,
     scenario_match_flag %in% c("unmatched", "no data to compare") ~ legacy_val,
-    TRUE ~ NA_real_
-  )) %>% 
-  select(tmk, newpre_2009, new2009, new2010, starts_with("new_201"), everything()) %>% 
-  # Use rowwise to build the unique story without the split/paste overhead
-  rowwise() %>%
+    TRUE                                                        ~ NA_real_
+  ))) %>% 
+  select(
+    tmk, newpre_2009, 
+    starts_with("osds_cl_200"), starts_with("osds_cl_201"), starts_with("osds_cl_202"), 
+    everything()
+  ) %>% 
+  rowwise() %>% 
   mutate(unique_story = {
-    vals <- c_across(starts_with("new"))
+    vals <- c_across(c(newpre_2009, starts_with("osds_cl_")))
     vals <- vals[!is.na(vals) & vals != "" & vals != "NA"]
     paste(unique(vals), collapse = "|")
-  }) %>%
-  ungroup() %>%
+  }) %>% 
+  ungroup() %>% 
   mutate(
     upgrade_scenario = case_when(
-      # High-priority special overrides
       unique_story == "9|1|8"  ~ "cesspool and septic - both repaired, no change",
       unique_story == "10|2|9" ~ "cesspool and septic 2 - septic repaired twice, cesspool once",
-      unique_story == "7|9|1" ~ "potential data error: cesspool added, then possibly updated",
-      unique_story == "4|2" ~ "septic and aerobic - replacement of aerobic",
+      unique_story == "7|9|1"  ~ "potential data error: cesspool added, then possibly updated",
+      unique_story == "4|2"    ~ "septic and aerobic - replacement of aerobic",
+      unique_story == "3|4"    ~ "septic combo to aerobic",
+      unique_story == "1|4"    ~ "single septic to aerobic",
+      unique_story == "7|4"    ~ "complex septic system to aerobic",
+      unique_story == "8|5"    ~ "cesspool to septic / aerobic hybrid",
+      unique_story == "5|1"    ~ "septic and aerobic to septic",
+      unique_story == "7|3"    ~ "2 septics and aerobic to just 2 septics - aerobic removal",
+      unique_story == "7|1|4"  ~ "2 septics and aerobic + one septic repair + one aerobic repair",
+      unique_story == "10|9"   ~ "1 septic + cesspool to better septic and cesspool",
       
-      # Standard Logic
       unique_story == "" | !str_detect(unique_story, "\\|") ~ "no upgrade detected",
-      str_detect(unique_story, "^8\\|.*[1234]$") ~ "single cesspool upgraded to septic or aerobic",
-      str_detect(unique_story, "^3\\|.*[12]$") ~ "multiple septic with new permit: possible repair",
-      str_detect(unique_story, "^[24]\\|.*1$") ~ "septic or aerobic system refined to cleanest type (Class 1)",
-      str_detect(unique_story, "^(9|1[0-5])\\|.*[1234]$") ~ "multiple osds with cesspool upgraded",
-      str_detect(unique_story, "^(9|1[0-5])\\|.*8$") ~ "multiple osds with new cesspool application",
+      str_detect(unique_story, "^8\\|.*[1234]$")           ~ "single cesspool upgraded to septic or aerobic",
+      str_detect(unique_story, "^3\\|.*[12]$")             ~ "multiple septic with new permit: possible repair",
+      str_detect(unique_story, "^[24]\\|.*1$")             ~ "septic or aerobic system refined to cleanest type (Class 1)",
+      str_detect(unique_story, "^(9|1[0-5])\\|.*[1234]$")  ~ "multiple osds with cesspool upgraded",
+      str_detect(unique_story, "^(9|1[0-5])\\|.*8$")       ~ "multiple osds with new cesspool application",
       
-      # Errors and Laterals
       str_detect(unique_story, "^[1-7]\\|.*(8|9|1[0-5])$") ~ "potential data error: backslide to cesspool",
-      str_detect(unique_story, "^[123]\\|.*[123]$") ~ "lateral change (clean to clean)",
+      str_detect(unique_story, "^[123]\\|.*[123]$")        ~ "lateral change (clean to clean)",
       
       TRUE ~ "other scenario"
     )
   )
 
-# table 3 updated - note, this one has a new column we'll need to add to "unchanged"
+# Build active time series carrying forward active permits bitwise
+table3_updated_new <- update_logic_refined_cl %>% 
+  select(tmk, osds_class_pre2009 = newpre_2009, starts_with("osds_cl_"))
 
-table_3_new_updated <- update_logic_refined_cl %>% 
-  select(tmk, starts_with("new"))
+class_flag_forTable1 <- update_logic_refined_cl %>% 
+  select(
+    tmk, 
+    class_match_flag = scenario_match_flag, 
+    unique_story, 
+    upgrade_scenario
+  )
 
-# create df version to add the flag to table 1. Pivot for table 3.
+# Export intermediate CSVs
+write_csv(table3_updated_new,    file.path(step3_dir, "hi_table3_new_updated.csv"))
+write_csv(class_flag_forTable1,   file.path(step3_dir, "hi_classflags_fortable1.csv"))
 
-class_flag_table1 <- update_logic_refined_cl %>% 
-  select(tmk,class_match_flag = scenario_match_flag,unique_story,upgrade_scenario)
-
-# ------------------- Finalize Tables 1, 2 and 3a for Updated ----------- #
-# Combine new and updated after gap filling and resolving issues between WH version and Dwell data
-
-# Table 1: New flag = gapfill flag
-
-table1_updated <- otp_updated_with_BEDflags_gapfilled %>% 
-  select(tmk,n_permits,n_years,n_addresses,min_year,max_year,is_dwelling,scenario,status_since_otp,bed_trend,gapfill_flag) %>% 
-  rename(bedroom_data_source = gapfill_flag) %>% 
-  mutate(n_addresses = as.character(n_addresses))
-
-# read in full registry 
-table1_new_and_unchanged <- read_csv( file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/hi_tables/table1_tmk_registry_NEW_and_UNCHANGED.csv"))
-
-#
-table_1_complete <- table1_new_and_unchanged %>% 
-  full_join(table1_updated, by = c("tmk", "n_permits", "n_years", "n_addresses", 
-                                   "min_year", "max_year", "is_dwelling","status_since_otp",
-                                   "scenario")) %>%
-  mutate(bedroom_data_source = ifelse(is.na(bedroom_data_source),gapfill_flag,bedroom_data_source)) %>% 
-  mutate(bedroom_data_source = ifelse(is.na(bedroom_data_source),"Used dwell data",bedroom_data_source)) %>% 
-  rename(in_dwelldat = is_dwelling) %>% 
-  select(-gapfill_flag) %>% 
-  left_join(., class_flag_table1, by = "tmk") %>% # add in flags from table 3
-  mutate(upgrade_scenario = ifelse(is.na(upgrade_scenario),"no upgrade detected",upgrade_scenario))
-
-table_1_complete_v2 <- table1_new_and_unchanged %>%
-  # Join ONLY on tmk to avoid creating duplicate rows for the same property
-  full_join(table1_updated, by = "tmk", suffix = c(".orig", ".upd")) %>%
-  mutate(
-    # Prefer the updated value, fall back to original
-    n_permits = coalesce(n_permits.upd, n_permits.orig),
-    status_since_otp = coalesce(status_since_otp.upd, status_since_otp.orig),
-    scenario = coalesce(scenario.upd, scenario.orig),
-    # ... do this for the other columns if they are creating duplicates
-  ) %>%
-  # Clean up the .orig/.upd columns
-  select(-ends_with(".orig"), -ends_with(".upd")) %>%
-  left_join(class_flag_table1, by = "tmk")
-  
-  
-# Table 2: Bedroom by year
-
-table2_new_unchanged <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/hi_tables/table2_bedrooms_NEW_and_UNCHANGED.csv"))
-
-table_2_complete <- table2_updated %>% # need to fix this
-  rename_with(
-    ~str_replace(., "newbeds","beds"),
-    starts_with("new")
-  ) %>% 
-  full_join(table2_new_unchanged, by = c("tmk", grep("^beds_", names(table2_updated), value = TRUE)))
-# 807 missing from this, should all be accounted for in table 4
-
-
-# Table 3a: Encoded class by year  
-table3_new_and_unchanged <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/hi_tables/table3_classes_NEW_and_UNCHANGED.csv")) %>% 
-  mutate(osds_cl_pre_2009 = NA)
-
-correct_order <- colnames(table3_new_and_unchanged)
-
-# table_3_updated_cl <- table_3_new_updated %>% 
-#     rename_with(
-#     ~str_replace(., "new","osds_cl_"),
-#     starts_with("new")
-#   ) %>% 
-#   select(all_of(correct_order)) %>% 
-#   filter(tmk %in% otp_with_updates$tmk)
-
-# try a different way 
-table_3_complete_v2 <- table3_new_and_unchanged %>%
-  # remove the TMKs that we have specific updates for
-  filter(!(tmk %in% table_3_new_updated_cl$tmk)) %>%
-  # now add the updated versions
-  bind_rows(table_3_new_updated_cl) %>%
-  # Final safety check
-  filter(tmk %in% table_1_complete$tmk) # reorder.
-
-# # these aren't working
-# table3_complete <- union(table_3_new_updated_cl, table3_new_and_unchanged)
-# 
-# # something is fucked up here
-# table_3_complete_v2 <- bind_rows(table3_new_and_unchanged, table_3_new_updated_cl) %>% 
-#   distinct() %>% 
-#   filter(tmk %in% table_1_complete$tmk) # 1936 extra
-
-# Checks: 
-# All TMKs in table 1 accounted for table 3? 
-
-all(table_1_complete$tmk %in% table_3_complete_v2$tmk)
-
-# All TMKS in table 2 in table 1?
-
-all(table_2_complete$tmk %in% table_1_complete$tmk)
-
-# Are all the no dwells in table 1?
-
-all(new_nodwell$tmk %in% table_1_complete$tmk) # TRUE
-
-# Is the authoritative tmk list we pulled at the beginning all in table 1?
-
-all(master_tmk_registry$tmk %in% table_1_complete$tmk) #TRUE YAY
-
-
-
-
-
-# Save final versions! Don't forget table 4 draft
-
-write_csv(table_1_complete,
-          file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/hi_tables/table1_tmk_registry_ALL_draft.csv"))
-
-write_csv(table2_complete,
-          file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/hi_tables/table2_bedrooms_ALL_draft.csv"))
-
-
-write_csv(table_3_complete_v2,
-          file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/hi_tables/table3_osdscl_ALL_draft.csv"))
-
-
-write_csv(updated_table4_draft,
-          file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/hi_tables/table4_updated_draft.csv"))
+cat("Big Island Updated Parcels Processing Complete:\n")
+cat("- Updated Bedroom Gap-Filling Done:", nrow(table_2_updatedGapfilled), "parcels\n")
+cat("- Updated Class Scenarios Classified:", nrow(table3_updated_new), "parcels\n")
 
 
 ```
 
 
+## Step 4 - Compile Final tables
 
-#### Table 4: Commercial Locations Prep
 
 ```{r}
 
-# --------------------Create table 4: Commercial Locations -------------------------------- #
-# these are dwellings we do not have any bedroom information for. should be about 807 of these guys
+library(tidyverse)
 
-# read in the one from unchanged
-table4_newunchaged <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/hi_tables/table4_commercial_UNCHANGED_only.csv"))
+'%!in%' <- Negate('%in%')
 
-# read in the one from updated
-table4_updated <- read.csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/hi_tables/table4_updated_draft.csv")) %>% 
-  select(tmk, otp_commercial)
+# ==============================================================================
+# 0. BIG ISLAND TMK CLEANER FUNCTION
+# ==============================================================================
+clean_hi_tmk <- function(df, target_col = "tmk") {
+  col_names <- names(df)
+  actual_col <- if (target_col %in% col_names) {
+    target_col
+  } else if ("full_taxid" %in% col_names) {
+    "full_taxid"
+  } else if ("TMK" %in% col_names) {
+    "TMK"
+  } else {
+    target_col
+  }
+  
+  df %>% 
+    mutate(
+      raw_val = as.character(.data[[actual_col]]),
+      raw_val = if_else(str_detect(raw_val, "e\\+"), sprintf("%.0f", as.numeric(raw_val)), raw_val),
+      digits = str_replace_all(raw_val, "[^0-9]", ""),
+      digits = if_else(nchar(digits) >= 9, substr(digits, 1, 9), digits),
+      digits = case_when(
+        nchar(digits) == 8 ~ paste0("3", digits),
+        nchar(digits) == 9 & str_starts(digits, "0") ~ paste0("3", substr(digits, 2, 9)),
+        TRUE ~ str_pad(digits, width = 9, side = "left", pad = "0")
+      )
+    ) %>% 
+    mutate(tmk = digits) %>% 
+    select(-any_of(c("raw_val", "digits"))) %>% 
+    filter(!is.na(tmk) & tmk != "" & tmk != "000000000")
+}
 
-# what about new?
-new_nodwell <- IWS_table1_tmk_registry %>% 
-  filter(is_dwelling == FALSE) %>% #n = 807
-  rename(tmk = full_taxid) %>% 
-  full_join(table4_updated, by = "tmk") %>% 
-  filter(tmk %!in% table2_complete$tmk) # this got rid of the extras
+# Directories
+int_dir <- file.path(driver_dir, "4_OSDS_N_Runoff/intermediate")
+step2_dir <- file.path(int_dir,"step2-clean-permit-data")
+step3_dir <- file.path(int_dir, "step3")
+out_dir   <- file.path(int_dir, "step4")
+dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
 
-# list for google places api = whereever ^ this one is NA. need to fill all those.
+# ==============================================================================
+# 1. TABLE 1: TMK MASTER REGISTRY
+# ==============================================================================
 
-tmks_for_fill <- new_nodwell %>% 
-  filter(is.na(otp_commercial)) %>% 
-  pull(tmk) # 677
+table_1_new <- read_csv(
+  file.path(step2_dir, "hi_table1_tmk_registry_all.csv"),
+  col_types = cols(.default = "c")
+) %>% 
+  clean_hi_tmk("tmk") %>% 
+  rename(in_dwelldat = any_of(c("is_dwelling", "in_dwelldat"))) %>% 
+  mutate(
+    status_since_otp = "New Permit",
+    n_addresses = as.character(n_addresses)
+  ) %>% 
+  distinct(tmk, .keep_all = TRUE)
 
-# get addresses
+table_1_unchanged <- read_csv(
+  file.path(step3_dir, "hi_table1_tmk_registry_UNCHANGED.csv"),
+  col_types = cols(.default = "c")
+) %>% 
+  clean_hi_tmk("tmk") %>% 
+  mutate(scenario = "No new permits") %>% 
+  distinct(tmk, .keep_all = TRUE)
 
-address_for_googleplace <- iws_hi_permits %>% 
-  filter(TMK %in% tmks_for_fill) %>% 
-  select(-permit_id, -FinalApprovalDate) %>% 
-  distinct()
+bedFlags_forTable1 <- read_csv(
+  file.path(step3_dir, "hi_bedflags_fortable1.csv"),
+  col_types = cols(.default = "c")
+) %>% 
+  clean_hi_tmk("tmk")
 
-write_csv(address_for_googleplace,
-          file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/hi_tables/addresses_for_googleplace.csv"))
+classFlags_forTable1 <- read_csv(
+  file.path(step3_dir, "hi_classflags_fortable1.csv"),
+  col_types = cols(.default = "c")
+) %>% 
+  clean_hi_tmk("tmk")
+
+# Combine registries and attach gap-fill flags
+table_1_complete <- bind_rows(table_1_new, table_1_unchanged) %>% 
+  distinct(tmk, .keep_all = TRUE)
+
+table_1_complete_flags <- table_1_complete %>% 
+  left_join(bedFlags_forTable1, by = "tmk") %>% 
+  left_join(classFlags_forTable1, by = "tmk") %>% 
+  distinct(tmk, .keep_all = TRUE)
+
+# ==============================================================================
+# 2. TABLE 2: BEDROOM TIME-SERIES
+# ==============================================================================
+
+table_2_unchanged <- read_csv(
+  file.path(step3_dir, "hi_table2_bedrooms_UNCHANGED.csv"),
+  col_types = cols(.default = "c")
+) %>% 
+  clean_hi_tmk("tmk") %>% 
+  mutate(across(-tmk, as.numeric))
+
+if (!exists("table_2_updatedGapfilled")) {
+  table_2_updatedGapfilled <- read_csv(
+    file.path(step3_dir, "hi_table2_updated_gapfilled.csv"),
+    col_types = cols(.default = "c")
+  )
+}
+
+if (!exists("table_2_new")) {
+  table_2_new <- read_csv(
+    file.path(step2_dir, "table2a_bedrooms_sum.csv"),
+    col_types = cols(.default = "c")
+  )
+}
+
+table_2_updated_forbind <- table_2_updatedGapfilled %>% 
+  clean_hi_tmk("tmk") %>% 
+  rename_with(~ str_replace(.x, "^beds_", "bedrooms_"), starts_with("beds_")) %>% 
+  rename_with(~ str_replace(.x, "^newbeds", "bedrooms_"), starts_with("newbeds")) %>% 
+  mutate(across(-tmk, as.numeric))
+
+table_2_newonly <- table_2_new %>% 
+  clean_hi_tmk("tmk") %>% 
+  filter(tmk %!in% table_2_updatedGapfilled$tmk) %>% 
+  rename_with(~ str_replace(.x, "^beds_", "bedrooms_"), starts_with("beds_")) %>% 
+  rename_with(~ str_replace(.x, "^newbeds", "bedrooms_"), starts_with("newbeds")) %>% 
+  mutate(across(-tmk, as.numeric))
+
+table_2_complete <- bind_rows(
+  table_2_unchanged, 
+  table_2_updated_forbind, 
+  table_2_newonly
+) %>% 
+  distinct(tmk, .keep_all = TRUE)
+
+# ==============================================================================
+# 3. TABLE 3A: OSDS PERMIT & CLASS HISTORY
+# ==============================================================================
+
+table_3_unchanged <- read_csv(
+  file.path(step3_dir, "hi_table3_classes_UNCHANGED.csv"),
+  col_types = cols(.default = "c")
+) %>% 
+  clean_hi_tmk("tmk") %>% 
+  rename_with(~ str_replace(.x, "^osds_cl_", "osds_class_"), starts_with("osds_cl_")) %>% 
+  mutate(across(starts_with("bedrooms_"), as.numeric))
+
+if (!exists("table3_updated_new")) {
+  table3_updated_new <- read_csv(
+    file.path(step3_dir, "hi_table3_new_updated.csv"),
+    col_types = cols(.default = "c")
+  )
+}
+
+if (!exists("table_3_new")) {
+  table_3_new <- read_csv(
+    file.path(step2_dir, "table3_class_all.csv"),
+    col_types = cols(.default = "c")
+  )
+}
+
+table_3_updatedforbind <- table3_updated_new %>% 
+  clean_hi_tmk("tmk") %>% 
+  rename(osds_class_pre2009 = any_of(c("newpre_2009", "osds_class_pre2009"))) %>% 
+  rename_with(~ str_replace(.x, "^osds_cl_", "osds_class_"), starts_with("osds_cl_")) %>% 
+  rename_with(~ str_replace(.x, "^newclass", "osds_class_"), starts_with("newclass")) %>% 
+  mutate(across(starts_with("bedrooms_"), as.numeric))
+
+table_3_newonly <- table_3_new %>% 
+  clean_hi_tmk("tmk") %>% 
+  filter(tmk %!in% table_3_updatedforbind$tmk) %>% 
+  rename_with(~ str_replace(.x, "^osds_cl_", "osds_class_"), starts_with("osds_cl_")) %>% 
+  rename_with(~ str_replace(.x, "^newclass", "osds_class_"), starts_with("newclass")) %>% 
+  mutate(across(starts_with("bedrooms_"), as.numeric))
+
+table_3_complete <- bind_rows(
+  table_3_updatedforbind, 
+  table_3_unchanged, 
+  table_3_newonly
+) %>% 
+  distinct(tmk, .keep_all = TRUE)
+
+# ==============================================================================
+# 4. TABLE 4: COMMERCIAL & NON-RESIDENTIAL PARCELS
+# ==============================================================================
+
+table_4_unchanged <- read_csv(
+  file.path(step3_dir, "hi_table4_commercial_UNCHANGED_draft.csv"),
+  col_types = cols(.default = "c")
+) %>% 
+  clean_hi_tmk("tmk") %>% 
+  select(tmk, any_of(c("commercial", "pitt_code", "pittcode", "x", "y"))) %>% 
+  rename(pitt_code = any_of(c("pittcode", "pitt_code"))) %>% 
+  mutate(across(everything(), as.character))
+
+# table_4_googleplaces <- read_csv(
+#   file.path(step3_dir, "hi_table4_googleplaces_UNCHANGED_draft.csv"),
+#   col_types = cols(.default = "c")
+# ) %>% 
+#   clean_hi_tmk("tmk") %>% 
+#   mutate(
+#     commercial = "unknown",
+#     pitt_code = "-9999"
+#   ) %>% 
+#   select(tmk, any_of(c("commercial", "pitt_code", "x", "y"))) %>% 
+#   mutate(across(everything(), as.character))
+
+table_4_withUpdates_forbind <- if (exists("table4_withUpdates")) {
+  table4_withUpdates %>% 
+    clean_hi_tmk("tmk") %>% 
+    filter(!is.na(commercial) | !is.na(pitt_code)) %>% 
+    select(tmk, any_of(c("commercial", "pitt_code", "x", "y"))) %>% 
+    mutate(across(everything(), as.character))
+} else {
+  tibble(tmk = character(), commercial = character(), pitt_code = character(), x = character(), y = character())
+}
+
+table_4_new <- read_csv(
+  file.path(step2_dir, "hi_table1_tmk_registry_commercial.csv"),
+  col_types = cols(.default = "c")
+) %>% 
+  clean_hi_tmk("tmk") %>% 
+  filter(tmk %!in% table_4_withUpdates_forbind$tmk) %>% 
+  mutate(
+    commercial = "unknown",
+    pitt_code = "-9999"
+  ) %>% 
+  select(tmk, any_of(c("commercial", "pitt_code", "x", "y"))) %>% 
+  mutate(across(everything(), as.character))
+
+table_4_complete <- bind_rows(
+  table_4_unchanged,
+  #table_4_googleplaces,
+  table_4_new,
+  table_4_withUpdates_forbind
+) %>% 
+  distinct(tmk, .keep_all = TRUE)
+
+table_4_complete_cl <- table_4_complete %>% 
+  mutate(
+    pitt_code = if_else(is.na(pitt_code), "-9999", pitt_code),
+    commercial = if_else(is.na(commercial) | commercial == "unknown", "check google places", commercial)
+  )
+
+# ==============================================================================
+# 5. FINAL RECONCILIATION & TABLE 1 OVERRIDES
+# ==============================================================================
+
+tmks_with_bedrooms <- table_2_complete %>% 
+  filter(if_any(starts_with("bedrooms_"), ~ !is.na(.x) & .x > 0)) %>% 
+  pull(tmk)
+
+table_4_complete_cl <- table_4_complete_cl %>% 
+  filter(tmk %!in% tmks_with_bedrooms) #yikes, this reduced by 200?
+
+shouldbein_table_4 <- setdiff(table_1_complete_flags$tmk, table_2_complete$tmk) #1225
+
+# Build Final Table 1 Master
+table_1_final_final <- table_1_complete_flags %>% 
+  mutate(use_table_4 = tmk %in% table_4_complete_cl$tmk) %>% 
+  select(
+    tmk,
+    starts_with("n_"),
+    min_year,
+    max_year,
+    in_dwelldat,
+    status_since_otp,
+    n_buildings,
+    bed_trend,
+    year_built_combined,
+    bed_gapfill_flag = gapfill_flag,
+    class_match_flag,
+    permit_story = unique_story, 
+    upgrade_scenario,
+    use_table_4
+  ) %>% 
+  distinct(tmk, .keep_all = TRUE)
+
+# ==============================================================================
+# 6. AUTOMATED INTEGRITY CHECKS
+# ==============================================================================
+
+cat("--- BIG ISLAND PIPELINE INTEGRITY CHECKS ---\n")
+cat("1. All Table 1 TMKs present in Table 3a:", all(table_1_final_final$tmk %in% table_3_complete$tmk), "\n")
+cat("2. All Table 2 TMKs present in Table 1:", all(table_2_complete$tmk %in% table_1_final_final$tmk), "\n")
+
+if (exists("hawaii_master_tmk_list")) {
+  clean_master_tmks <- tibble(tmk = as.character(hawaii_master_tmk_list)) %>% 
+    clean_hi_tmk("tmk") %>% 
+    filter(tmk != "000000000") %>% 
+    pull(tmk) %>% 
+    unique()
+  
+  missing_master <- setdiff(clean_master_tmks, table_1_final_final$tmk)
+  
+  cat("3. All Valid Master TMKs present in Table 1:", length(missing_master) == 0, "\n")
+  if (length(missing_master) > 0) {
+    cat("   -> Missing TMK count:", length(missing_master), "\n")
+    cat("   -> Missing TMKs:", paste(head(missing_master, 10), collapse = ", "), "\n")
+  }
+}
+# check our original dataset to see what these are
+otp_missing <- hi_otp %>% filter(tmk %in% missing_master)
+
+iws_hi_permits_missing <- iws_hi_permits %>%  filter(tmk %in% missing_master)
+
+# ok cool so they are just empty. export.
+
+
+# ==============================================================================
+# 7. EXPORT STATEWIDE-COMPATIBLE CSVs
+# ==============================================================================
+
+write_csv(
+  table_1_final_final,
+  file.path(out_dir, "hi_table1_tmk_registry_ALL.csv")
+)
+
+write_csv(
+  table_2_complete,
+  file.path(out_dir, "hi_table2_bedrooms_ALL.csv")
+)
+
+write_csv(
+  table_3_complete,
+  file.path(out_dir, "hi_table3a_permitsApplied_ALL.csv")
+)
+
+write_csv(
+  table_4_complete_cl,
+  file.path(out_dir, "hi_table4_commercial_draft.csv")
+)
+
+cat("Big Island Step 4 Synthesis Complete! Files exported to:", out_dir, "\n")
+
 
 ```
 
@@ -1717,7 +1667,7 @@ Of the upgrades (N = 1514),
 - 3 are new cesspools on properties that already had multiple osds. that means there are about 130 new applications
 
 
-### Step 4: Apply bitmask logic to create "status" table from permit data
+#### Create Table 3b Apply bitmask logic to create "status" table from permit data
 
 The additive encoding is what is known as a binary bit mask. Each class represents a power of 2, so every unique sum corresponds to exactly one combination of classes. 
 
@@ -1735,47 +1685,7 @@ This translates to the following math:
 ```{r}
 
 
-library(tidyverse)
-
-## ------------- 1. Helper functions ---------------- ##
-
-# Function to find the largest power of 2 less than or equal to x
-get_highest_class <- function(x) {
-  if (x == 0) return(0)
-  return(2^floor(log2(x)))
-}
-
-# Input data
-# Example:  Year 1 value is 13 (8+4+1). Year 3 brings a "1".
-applications <- c(13, 13, 1, 1, 1) 
-active_status <- numeric(length(applications))
-
-# Initialize
-running_total <- applications[1]
-active_status[1] <- running_total
-
-# Logic loop 
-for (i in 2:length(applications)) {
-  # Trigger logic only if a NEW application value appears
-  if (applications[i] != applications[i-1]) {
-    
-    # 1. Identify the highest bit currently active
-    highest <- get_highest_class(running_total)
-    
-    # 2. Remove that highest bit
-    # bitwAnd(x, bitwNot(y)) is the "proper" way to subtract a bit
-    remaining <- bitwAnd(running_total, bitwNot(highest))
-    
-    # 3. Add the new application bitwise (OR)
-    # This prevents 1 + 1 becoming 2
-    running_total <- bitwOr(remaining, applications[i])
-  }
-  
-  active_status[i] <- running_total
-}
-
-
-# wrapped in a nice function you can apply to a long-format table
+# ------------------- Helper functions ------------------- #
 
 # 1. Create a function for the logic
 calculate_active_permits <- function(apps) {
@@ -1801,15 +1711,10 @@ calculate_active_permits <- function(apps) {
   return(active_status)
 }
 
-## ------------- 2. Read in data, reshape and apply ---------------- ##
-
-table_3a <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/hi_tables/table3_osdscl_ALL_draft.csv"))
-
-  
-table_3a_long <- table_3a %>% 
-  rename(osds_cl_2008 = osds_cl_pre_2009) %>% # note, this is a stand in for "pre 2009"
+table_3a_long <- table_3_complete %>% # note, this is a stand in for "pre 2009"
+  rename(osds_class_2008 = osds_class_pre2009) %>% 
   pivot_longer(cols = -tmk, names_to = "Year", values_to = "Applied") %>% 
-  mutate(Applied = replace_na(Applied,0))
+  mutate(Applied = replace_na(as.numeric(Applied),0))
   
 table_3b_long <- table_3a_long %>% 
   arrange(tmk,Year) %>% 
@@ -1821,12 +1726,7 @@ table_3b_wide <- table_3b_long %>%
   pivot_wider(id_cols = tmk, names_from = Year,values_from = active_status)
 
 write_csv(table_3b_wide,
-          file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/hi_tables/table3b_allyears_draft.csv"))
-
-
-## ---------- 3. Detect change - is it the same as before? ----------- ##
-
-
+          file.path(driver_dir,"4_OSDS_N_Runoff/intermediate/step4/hi_table3b_activeOSDS.csv"))
 
 
 ```
@@ -1835,6 +1735,47 @@ write_csv(table_3b_wide,
 
 
 # OLD CODE 
+
+
+#### Create Commercial Locations Prep
+
+```{r}
+
+# --------------------Create table 4: Commercial Locations -------------------------------- #
+# these are dwellings we do not have any bedroom information for. should be about 807 of these guys
+
+# read in the one from unchanged
+table4_newunchaged <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/hi_tables/table4_commercial_UNCHANGED_only.csv"))
+
+# read in the one from updated
+table4_updated <- read.csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/hi_tables/table4_updated_draft.csv")) %>% 
+  select(tmk, otp_commercial)
+
+# what about new?
+new_nodwell <- IWS_table1_tmk_registry %>% 
+  filter(is_dwelling == FALSE) %>% #n = 807
+  rename(tmk = full_taxid) %>% 
+  full_join(table4_updated, by = "tmk") %>% 
+  filter(tmk %!in% table2_complete$tmk) # this got rid of the extras
+
+# list for google places api = whereever ^ this one is NA. need to fill all those.
+
+tmks_for_fill <- new_nodwell %>% 
+  filter(is.na(otp_commercial)) %>% 
+  pull(tmk) # 677
+
+# get addresses
+
+address_for_googleplace <- iws_hi_permits %>% 
+  filter(TMK %in% tmks_for_fill) %>% 
+  select(-permit_id, -FinalApprovalDate) %>% 
+  distinct()
+
+write_csv(address_for_googleplace,
+          file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/hi_tables/addresses_for_googleplace.csv"))
+
+```
+
 
 B) NON DWELL scenarios
 
