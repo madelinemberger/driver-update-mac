@@ -31,27 +31,22 @@ We'll also pull the old spatial information, for the points that had them, and i
 ## Data Prep
 ### Read in and combine Table 1 from all Islands
 
-```{r}
+```{r combine-table1}
 
-kauai <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/kauai_tables/table1_tmk_registry_ALL.csv")) %>% 
-  select(-use_table4) %>% 
+in_dir <- file.path(driver_dir,"4_OSDS_N_Runoff/intermediate/step4")
+
+kauai <- read_csv(file.path(in_dir,"kauai_table1_tmk_registry_ALL.csv")) %>% 
+  select(-class_match_flag) %>% 
   mutate(county = "Kauai")
-maui_nui <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/maui_tables/table1_tmk_registry_ALL.csv")) %>% 
-  select(-use_table4) %>% 
-  mutate(county = "Maui Nui")
-oahu <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/oahu_tables/table1_tmk_registry_ALL.csv")) %>% 
-  select(-use_table4) %>% 
-  mutate(county = "Honolulu")
-hawaii <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/hi_tables/table1_tmk_registry_ALL_draft.csv")) %>% 
-  rename(permit_story= unique_story ,
-         bed_gapfill_flag = bedroom_data_source) %>% 
-  select(-min_year,-max_year,-class_match_flag,-scenario,-pitt_assignment) %>% 
-  mutate(n_buildings = "temp until fill",
-         year_built_combined = "temp until fill",
-         use_table_4 = "temp until fill",
-         county = "Hawaii")
 
-setdiff(colnames(maui_nui), colnames(hawaii))
+maui_nui <- read_csv(file.path(in_dir,"maui_table1_tmk_registry_ALL.csv")) %>% mutate(county = "Maui Nui")
+oahu <- read_csv(file.path(in_dir,"oahu_table1_tmk_registry_ALL.csv")) %>% 
+  mutate(county = "Honolulu")
+
+hawaii <- read_csv(file.path(in_dir,"hi_table1_tmk_registry_ALL.csv")) %>%
+  select(-class_match_flag) %>% 
+  mutate(county = "Hawaii")
+
 
 # complete tmk registry 
 
@@ -148,7 +143,7 @@ crs(mauinui_hi_kau_spatial) == crs(otp_oahu_spatial)
 ```
 
 
-## TMK - point on surface
+## Convert TMK Parcels to Points - point on surface
 
 ```{r}
 
@@ -185,6 +180,8 @@ tmk_unique_centroids <- tmk_centroids %>%
   distinct(TMK_txt, .keep_all = TRUE) %>%
   select(tmk = TMK_txt)
 
+
+# I guess I will start with pos, and can always switch to 
 tmk_pos_join <- all_osds_tmks %>%
   left_join(tmk_unique_points, by = "tmk")
 
@@ -200,27 +197,34 @@ osds_with_tmkpos_cl <- tmk_pos_join %>%
   st_as_sf() %>% 
   st_transform(crs = crs(watersheds_shp)) # 895 dont have a tmk point
 
+# Save tmk_registry without spatial info
+
 ```
 
 
-### Gapfill missing info
+### Fill in missing spatial info using OTP coordinates
 
 ```{r}
 
-missing_spatial_info <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/final_tables/table1_tmk_registry_withOUTSpatial.csv")) %>% 
-    mutate(tmk = as.character(tmk))
+# first read in full table 1
+missing_spatial_info <- all_osds_tmks %>% 
+  filter(tmk %in% missing_tmks$tmk)
 
+# --------- filter out the tmks with missing spatial info from 
 
+# --------- oahu
 otp_oahu_spatial <- filter(otp_oahu_raw, tmk %in% missing_spatial_info$tmk) %>% 
-  select(tmk,x,y)
+  select(tmk,x,y) # N = 5
 
 otp_oahu_spatial <- st_transform(otp_oahu_spatial, crs = 32604)
 
+
+# -------- other islands
 crs(mauinui_hi_kau_spatial) == crs(otp_oahu_spatial)
 
 
 rest_islands_spatial <- filter(mauinui_hi_kau_spatial, tmk %in% missing_spatial_info$tmk) %>% 
-  clean_names()
+  clean_names() # N = 7
 
 all_for_gapfill <- rbind(otp_oahu_spatial,
                          rest_islands_spatial) %>% 
@@ -232,24 +236,31 @@ missing_info_gapfilled <- missing_spatial_info %>%
   left_join(., all_for_gapfill, by = "tmk") %>% 
   st_as_sf() %>% 
   st_transform(crs = crs(osds_with_tmkpos_cl)) %>% 
-  select(-x,-y, -HUC12,-Name)
+  select(-x,-y) %>% 
+  filter(!st_is_empty(geometry))
 
 
 # add back to the rest
 
-osds_spatial_gapfill1 <- rbind(osds_with_tmkpos_cl,
-                               missing_info_gapfilled)
+osds_spatial_gapfilled <- rbind(osds_with_tmkpos_cl,
+                               missing_info_gapfilled) %>% 
+  filter(!st_is_empty(geometry))
 
+
+still_missing <- setdiff(all_osds_tmks$tmk,osds_spatial_gapfilled$tmk)
+
+still_missing_df <- all_osds_tmks %>% filter(tmk %in% still_missing)
 
 ```
 
 
-## Add Watersheds 
+### Add Watersheds 
+
 ``` {r}
 
 ### Step 2: Spatial join to watersheds
 
-osds_with_watersheds <- st_join(osds_spatial_gapfill1, watersheds_shp, join = st_intersects)
+osds_with_watersheds <- st_join(osds_spatial_gapfilled, watersheds_shp, join = st_intersects)
 
 
 outside_count <- sum(is.na(osds_with_watersheds$Name)) # Name is watershed name
@@ -257,6 +268,8 @@ print(paste("Points with no watershed match:", outside_count))
 
 insiders <- osds_with_watersheds %>% filter(!is.na(Name))
 outsiders <- osds_with_watersheds %>% filter(is.na(Name))
+
+mapview(outsiders)
 
 # outsiders are mainly coastal. Add to nearest watershed. 
 nearest_indices <- st_nearest_feature(outsiders, watersheds_shp)
@@ -269,28 +282,32 @@ outsiders_fixed <- outsiders %>%
   bind_cols(st_drop_geometry(watersheds_shp[nearest_indices, ]))
 
 
-mapview(outsiders)
+mapview(outsiders_fixed)
 
 osds_final_watersheds <- bind_rows(insiders, outsiders_fixed) # 
 
 outside_count2 <- sum(is.na(osds_final_watersheds$Name))
 
 outsiders2 <- osds_final_watersheds %>% filter(is.na(Name))
-mapview(outsiders2) # 57 left 
+mapview(outsiders2) #0 left
 
-still_missing <- osds_final_watersheds %>% 
+still_missing_watershed <- osds_final_watersheds %>% 
   filter(is.na(Name))
 
 st_write(osds_final_watersheds,
          dsn = file.path(driver_dir,"4_OSDS_N_Runoff/output-data/final_tables/table1_tmk_registry_withSpatial.shp"),
          delete_dsn = T)
 
-st_write(still_missing,
+st_write(still_missing_df,
          dsn = file.path(driver_dir,"4_OSDS_N_Runoff/output-data/final_tables/table1_tmk_registry_withOUTSpatial.csv"),
          delete_dsn = T)
 
+```
 
 ### Last Step: Flow Lines. We can think about how to categorize these later
+
+```{r flowlines}
+
 
 
 ## read these back in, join but with spatial missing flag
@@ -330,7 +347,3 @@ any(duplicated(table_1_forChris$tmk))
 st_write(table_1_forChris,
          dsn = file.path(here("data/osds/shared-data/to_ChrisShuler/table1_simple_07_15_2026.shp")))
 ```
-
-
-## Add Flowlines?
-
