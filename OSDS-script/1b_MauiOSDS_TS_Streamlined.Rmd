@@ -554,7 +554,7 @@ maui_otp_unchanged_table3 <- maui_unchgd_encoded_dwell %>%
 maui_otp_unchanged_table4 <- maui_unchanged %>% 
   select(tmk, any_of(c("commercial", "pittcode", "pitt_code", "x", "y"))) %>% 
   rename(pitt_code = any_of(c("pittcode", "pitt_code"))) %>% 
-  filter(!is.na(commercial) | !is.na(pitt_code)) %>%
+  filter(!is.na(commercial)) %>%
   mutate(comm_assignment = case_when(
     pitt_code == 0                                ~ "Timeshare (Maui only)",
     pitt_code == 999                              ~ "Multiple PITT Codes",
@@ -809,7 +809,7 @@ table3_updated_classmatch <- maui_updated_withClassEnc_New %>%
   )
 
 table_1_new <- read_csv(
-  file.path(driver_dir, "4_OSDS_N_Runoff/output-data/int/maui_tables/table1_tmk_registry_all.csv"),
+  file.path(driver_dir, "4_OSDS_N_Runoff/intermediate/step2-clean-permit-data/maui_table1_tmk_registry_all.csv"),
   col_types = cols(.default = "c")
 ) %>% 
   mutate(
@@ -913,7 +913,7 @@ clean_maui_tmk <- function(df, col_name = "tmk") {
 
 # ---- Table 1 --------------
 table_1_new <- read_csv(
-  file.path(driver_dir, "4_OSDS_N_Runoff/output-data/int/maui_tables/table1_tmk_registry_all.csv"),
+  file.path(driver_dir, "4_OSDS_N_Runoff/intermediate/step2-clean-permit-data/maui_table1_tmk_registry_all.csv"),
   col_types = cols(.default = "c")
 ) %>% 
   mutate(tmk = if ("full_taxid" %in% names(.)) full_taxid else tmk) %>% 
@@ -936,9 +936,7 @@ table_1_unchanged <- read_csv(
 
 
 bedFlags_forTable1 <- read_csv(file.path(driver_dir, "4_OSDS_N_Runoff/intermediate/step3/maui_bedflags_fortable1.csv")) %>% 
-    mutate(tmk = as.character(tmk)) %>%
-  select(tmk,
-        bed_gapfill_flag = gapfill_flag)
+    mutate(tmk = as.character(tmk))
 
 classFlags_forTable1 <- read_csv(file.path(driver_dir, "4_OSDS_N_Runoff/intermediate/step3/maui_classflags_fortable1.csv")) %>% 
   mutate(tmk = as.character(tmk))
@@ -948,11 +946,12 @@ table_1_complete <- bind_rows(table_1_new, table_1_unchanged) %>%
   distinct(tmk, .keep_all = TRUE)
 
 # Attach bedroom and class gap-fill flags
-table_1_complete_flags <- table_1_complete %>% 
-  #left_join(bedFlags_forTable1, by = "tmk") %>% 
+table_1_complete_flags <- table_1_complete %>%
+  mutate(
+    use_table4 = ifelse(tmk %in% table_4_complete$tmk, TRUE,FALSE)
+  ) %>% 
+  left_join(bedFlags_forTable1, by = "tmk") %>% 
   left_join(classFlags_forTable1, by = "tmk") %>% 
-  select(-upgrade_scenario.x) %>% 
-  rename(upgrade_scenario = upgrade_scenario.y) %>% 
   distinct(tmk, .keep_all = TRUE)
 
 # ------------ Table 2 --------------------- #
@@ -1027,7 +1026,7 @@ table_4_withUpdates_forbind <- table4_withUpdates %>%
   mutate(across(everything(), as.character))
 
 table_4_new <- read_csv(
-  file.path(driver_dir, "4_OSDS_N_Runoff/output-data/int/maui_tables/table1_tmk_registry_commercial.csv"),
+  file.path(driver_dir, "4_OSDS_N_Runoff/intermediate/step2-clean-permit-data/maui_table1_tmk_registry_commercial.csv"),
   col_types = cols(.default = "c")
 ) %>% 
   mutate(tmk = if ("full_taxid" %in% names(.)) full_taxid else tmk) %>% 
@@ -1063,9 +1062,13 @@ table_4_complete_cl <- table_4_complete %>%
 shouldbein_table_4 <- setdiff(table_1_complete_flags$tmk, table_2_complete$tmk)
 shouldbe_intable2 <- setdiff(table_4_complete_cl$tmk, shouldbein_table_4)
 
-# Exclude residential properties from Table 4
+tmks_with_bedrooms <- table_2_complete %>% 
+  filter(if_any(starts_with("bedrooms_"), ~ !is.na(.x) & .x > 0)) %>% 
+  pull(tmk)
+
+# remove any entries we have bedrooms for
 table_4_complete_cl <- table_4_complete_cl %>% 
-  filter(tmk %!in% shouldbe_intable2)
+  filter(tmk %!in% tmks_with_bedrooms) 
 
 # Build Final Table 1 Master
 table_1_final_final <- table_1_complete_flags %>% 
@@ -1080,7 +1083,7 @@ table_1_final_final <- table_1_complete_flags %>%
     n_buildings,
     bed_trend,
     year_built_combined,
-    bed_gapfill_flag,
+    bed_gapfill_flag = gapfill_flag,
     permit_story = unique_story, 
     upgrade_scenario,
     use_table_4 = use_table4
