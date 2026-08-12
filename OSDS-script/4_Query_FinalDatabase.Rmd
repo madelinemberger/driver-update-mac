@@ -18,6 +18,8 @@ source(here("workflow/setup.R"))
 
 This markdown contains code to assemble and clean the final compiled database. It also contains the development code for the effluent query.
 
+Progress note 08-11-2026: Tables should be aligned upstream. Can dive right into query next session.
+
 ## Assemble Tables Into Final Database and Final Gapfilling
 
 Up until this point, I've worked on each dataset separately due to small differences in each islands' most recent dataset. 
