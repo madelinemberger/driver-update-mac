@@ -90,7 +90,7 @@ api_ready_address_oah <- addresses_fortbl4 %>%
   select(tmk, address_full)
 
 
-# --------------------- Kauai Maui ------------------------------ #
+# --------------------- Kauai Maui Hawaii ------------------------------ #
 
 # these do NOT have xy data. So weʻll use the TMK centroids below 
 
@@ -1332,5 +1332,104 @@ still_missing <- table_4_allislands <- rbind(hi_table4_mapped,
 
 write_csv(table_4_allislands, file.path(driver_dir,"4_OSDS_N_Runoff/output-data/final_tables/table4_identified_allislands.csv"))
   
+```
+
+### Check against New Tables
+
+Since we don't want to re-run these (it cost about 20) I'll just compare what we did before to the new and potentially improved table 4s, and see which are still missing. 
+
+```{r reconcile}
+
+# table classified
+classified_table4 <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/final_tables/table4_identified_allislands_preclean.csv"))
+
+# new table 4s post script alignment and cleaning
+int_path <- file.path(driver_dir,"4_OSDS_N_Runoff/intermediate/step4")
+
+fps <- list.files(path = int_path,
+                  pattern = "table4",
+                  full.names = TRUE)
+new_table4s <- lapply(fps, read_csv)
+new_table4s_combined <- do.call(rbind, new_table4s[1:3])
+
+oahu_table4 <- read_csv(fps[4]) %>% 
+  mutate(commercial = NA, 
+         pitt_code = NA)
+
+
+new_table4s_all <- rbind(
+  new_table4s_combined,
+  oahu_table4)
+
+# join with the classified one 
+# clean up the usable table 4s, add effluent calculation, and save!
+
+all_table4s_combined <- new_table4s_all %>% 
+  left_join(classified_table4, by = "tmk")
+
+
+usable_table4s <- all_table4s_combined %>% 
+  filter(!is.na(type) | (!is.na(commercial) & commercial != "check google places")) %>%  
+  mutate(comm_class_clean = str_to_lower(coalesce(type, commercial))) %>% 
+  select(-type,-commercial)
+
+missing_effluent_types <- usable_table4s %>% 
+  filter(is.na(min_estEffluent_gpd) | min_estEffluent_gpd == "") %>% 
+  distinct(comm_class_clean) %>% 
+  pull(comm_class_clean)
+
+unique(missing_effluent_types)
+
+
+usable_table4s_witheffluent <- usable_table4s %>%
+  select(-ends_with("gpd")) %>% 
+  mutate(
+    type = case_when(
+      # Baseyards
+      str_detect(comm_class_clean, "baseyard") ~ "baseyard",
+      
+      # Cemetaries
+      str_detect(comm_class_clean, "cemet") ~ "cemetary",
+      
+      # Churches
+      str_detect(comm_class_clean, "church") ~ "church",
+      
+      # Golf Courses
+      str_detect(comm_class_clean, "golf course") ~ "golf course",
+      
+      # Schools with Gym/Showers
+      str_detect(comm_class_clean, "school.*w/gym|school.*gym|school with showers|school with gym") ~ "school - with gym",
+      
+      # Schools without Gym
+      str_detect(comm_class_clean, "school") ~ "school - without gym",
+      
+      # Non-profits with Gyms/Showers
+      str_detect(comm_class_clean, "non-profit.*w/gym|non-profit.*showers") ~ "non-profit organzation with showers",
+      
+      # General Non-profits
+      str_detect(comm_class_clean, "non-profit|nonprofit") ~ "non-profit organization",
+      
+      # Parks
+      str_detect(comm_class_clean, "park") ~ "park",
+      
+      # Businesses & General Commercial (includes gov't, resturants, hotels, condos, etc.)
+      str_detect(comm_class_clean, "business|gov't|resturant|hotel|establishment|apartment|condo|gym") ~ "business",
+      
+      TRUE ~ NA_character_
+    )
+  ) %>% 
+  left_join(table_3_Oahu, by = "type")
+
+
+# filter out still missing 
+still_missing_table4s <- all_table4s_combined %>% 
+  filter(tmk %!in% usable_table4s_witheffluent$tmk) #2555
+
+write_csv(usable_table4s_witheffluent,
+          file.path(driver_dir,"4_OSDS_N_Runoff/output-data/final_tables/table4_identified_allislands.csv"))
+
+write_csv(still_missing_table4s,
+          file.path(driver_dir,"4_OSDS_N_Runoff/output-data/final_tables/table4_stillmissing_allislands.csv"))
+
 ```
 
