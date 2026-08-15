@@ -254,7 +254,7 @@ still_missing_df <- all_osds_tmks %>% filter(tmk %in% still_missing)
 ```
 
 
-### Add Watersheds 
+## Add Watersheds 
 
 ``` {r}
 
@@ -304,7 +304,17 @@ st_write(still_missing_df,
 
 ```
 
-### Last Step: Flow Lines. We can think about how to categorize these later
+## Add Distance from Coastline
+
+```{r}
+
+
+
+
+```
+
+
+### Potential addition: Flow Lines. We can think about how to categorize these later
 
 ```{r flowlines}
 

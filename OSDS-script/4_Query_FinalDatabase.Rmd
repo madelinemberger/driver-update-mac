@@ -20,7 +20,7 @@ This markdown contains code to assemble and clean the final compiled database. I
 
 Progress note 08-11-2026: Tables should be aligned upstream. Can dive right into query next session.
 
-## Assemble Tables Into Final Database and Final Gapfilling
+## Assemble Tables Into Final Database and Assess Final Gapfilling
 
 Up until this point, I've worked on each dataset separately due to small differences in each islands' most recent dataset. 
 Here I will combine them so we have one database with 5 tables:
@@ -33,156 +33,270 @@ Here I will combine them so we have one database with 5 tables:
 
 
 At this stage, we should also check to ensure there is data for at least one year for each TMK. Some buildings in the dwell dat, for example, did not have bedrooms listed (esp in Maui)
+
+
 We will gapfill these with the following assumption:
 - IF the tmk is in the tax record, with total_rooms, but no bedrooms, then we will assign the number of bedrooms as 50% of the total rooms
 - This comes from the following statistics on housing inventory: median number of rooms for HI homes is 4.7, and 55.4 percent of homes have 3 or more bedrooms. Therefore, a typical house has 2 or 3 bedrooms out of 4.7 rooms, so roughly 50% of a building can be considered bedrooms. 
+- note this should happen upstream, but for now we'll do it here. Add this as a clean up step for scripts
 
 ```{r}
 
-#
+# File path for intermediate folder
+
+int_dir <- file.path(driver_dir,"4_OSDS_N_Runoff/intermediate/")
 
 # ------------------- Table 1 -----------------------------
 
-oahu_1 <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/intermediate/step4/oahu_table1_tmk_registry_ALL.csv"))
-maui_1 <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/intermediate/step4/maui_table1_tmk_registry_ALL.csv"))
+oahu_1 <- read_csv(file.path(int_dir,"step4/oahu_table1_tmk_registry_ALL.csv"))
+maui_1 <- read_csv(file.path(int_dir,"step4/maui_table1_tmk_registry_ALL.csv"))
+kauai_1 <- read_csv(file.path(int_dir,"step4/kauai_table1_tmk_registry_ALL.csv")) |> 
+  select(-class_match_flag)# remove class match flag upsteam
+hi_1 <- read_csv(file.path(int_dir,"step4/hi_table1_tmk_registry_ALL.csv")) |> 
+  select(-class_match_flag)# remove class match flag upstream
 
+table_1_complete <- rbind(oahu_1,maui_1, kauai_1, hi_1) # 
 
-table_1_complete <- rbind(oahu_1,maui_1) # oahu is missing min year and max year. 
+# check these - not sure whats going on
+table1_napermitstory <- table_1_complete |> 
+  filter(is.na(permit_story))
 
+write_csv(table_1_complete ,file.path(driver_dir,"4_OSDS_N_Runoff/output-data/final_tables/table1_allislands_allosds.csv"))
+
+# double check in old scripts that permit story is added for new and non updated ones. 
 
 # ------------------ Table 2 ----------------- #
 
 
-oahu_table2 <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/intermediate/step4/oahu_table2_bedrooms_ALL.csv"))
-maui_table2 <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/intermediate/step4/maui_table2_bedrooms_ALL.csv"))
+oahu_table2 <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/intermediate/step4/oahu_table2_bedrooms_ALL.csv"))# oahu missing 4 years (2009, 2021, 2022, 2023)
+maui_table2 <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/intermediate/step4/maui_table2_bedrooms_ALL.csv")) |>
+  select(-ends_with(c("2008","2009","2021","2022", "2023")))
+kauai_table2 <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/intermediate/step4/kauai_table2_bedrooms_ALL.csv")) |> 
+  select(-ends_with(c("2009","2021","2022", "2023","2024", "2025"))) # goes up to 2025
+hi_table2 <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/intermediate/step4/hi_table2_bedrooms_ALL.csv")) |> 
+select(-ends_with(c("2021","2022", "2023")), -gapfill_flag)# upstream - remove gapfill flag 
 
 
-# Create lists of tmks that are 0s for bedroms
+table2_all_islands_2010_2020 <- rbind(oahu_table2,
+                                      maui_table2,
+                                      kauai_table2,
+ 
+                                                                           hi_table2) # this indicated that we should have about 4922 in table 4 
 
-# NOTE - we don't have most recent data for oahu
-maui_2 <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/maui_tables/table2_bedrooms_ALL.csv"))
+# ------------------ Gapfill Table 2  ----------------- #
 
-kauai_2 <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/kauai_tables/table2_bedrooms_ALL.csv"))
+empty_tmks <- table2_all_islands_2010_2020 %>%
+  filter(if_all(-tmk, ~ is.na(.) | . == 0)) %>%
+  pull(tmk)
 
-hi_2 <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/hi_tables/table2_bedrooms_ALL_draft.csv"))
+table_2_needsgapfill <- table2_all_islands_2010_2020 |> 
+  filter(tmk %in% empty_tmks)
 
-final_table2_allislands <- rbind(oahu_2,
-                                 maui_2,
-                                 kauai_2,
-                                 hi_2)
+# read in clean dwell data
 
-write_csv(final_table2_allislands,file.path(driver_dir,"4_OSDS_N_Runoff/output-data/final_tables/table2_allislands.csv"))
+oahu_dwell <- read_csv(file.path(int_dir,"step1-clean-dwelling-records/oahu_dwell_clean_allyears.csv")) |> 
+  select(tmk, total_rooms, year_built)
+maui_dwell <- read_csv(file.path(int_dir,"step1-clean-dwelling-records/maui_dwell_clean_alltmks.csv")) |> 
+  select(tmk, total_rooms, year_built)
+kauai_dwell <- read_csv(file.path(int_dir,"step1-clean-dwelling-records/kauai_dwell_clean_alltmks.csv")) |> 
+  select(tmk, total_rooms = tot_rooms, year_built = yrblt)
+hi_dwell <- read_csv(file.path(int_dir,"step1-clean-dwelling-records/hi_dwell_osds_tmks.csv")) |> 
+  select(tmk, total_rooms = rmtot, year_built = yrblt)
 
-# table 3as
+lookup_allislands <- rbind(oahu_dwell,
+                           maui_dwell,
+                           kauai_dwell,
+                           hi_dwell) |>
+filter(tmk %in% empty_tmks) %>%
+  filter(!is.na(total_rooms) & !is.na(year_built)) %>%
+  # Sort by TMK, and put the oldest year_built first
+  arrange(tmk, year_built) %>%
+  # Keep only the first record for each TMK (which will be the oldest year_built)
+  distinct(tmk, .keep_all = TRUE)
 
-oahu_3a <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/oahu_tables/table3_class_all.csv")) %>% 
-  rename(tmk = full_taxid)
-names(oahu_3a)[-1] <- paste0("osds_class_",names(oahu_3a)[-1])
+
+# next we'll build a loop that will look for total room and year built information in the dwell data. 
+
+year_cols <- setdiff(names(table2_all_islands_2010_2020), "tmk")
+
+# gapfill using vectorized operations
+table2_gapfilled <- table_2_needsgapfill |> 
+
+  left_join(lookup_allislands, by = "tmk") |> 
+  
+  # Step A: fill ALL year columns with total_rooms
+  mutate(total_rooms = as.numeric(total_rooms)) |> 
+  mutate(across(all_of(year_cols), ~ ifelse(total_rooms == 1, 1,round(total_rooms / 2)))) |> 
+  
+  # Step B: pivot to long format to easily zero-out years prior to year_built
+  pivot_longer(
+    cols = starts_with("bedrooms"),
+    names_to = "year_col",
+    values_to = "rooms"
+  ) |> 
+  mutate(
+    year_num = as.numeric(str_extract(year_col, "\\d{4}")),
+    # if the column year is older than year_built, set value to NA
+    rooms = case_when(
+      !is.na(year_built) & year_num < year_built ~ NA_real_,
+      !is.na(year_built) & year_num >= year_built ~ rooms,
+      is.na(year_built) ~ rooms # Keeps total_rooms if year_built is missing
+    )
+  ) |> 
+  
+  # Step C: Pivot back to wide format matching original table structure
+  pivot_wider(
+    id_cols = tmk,
+    names_from = year_col,
+    values_from = rooms
+  )
+  
+  # Step D: Drop temporary lookup columns (optional)
+  #select(-total_rooms, -year_built, -year_num)
 
 
-maui_3a <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/maui_tables/table3a_permitsApplied_ALL.csv")) %>% 
-  select(-starts_with("new"))
+still_empty_tmks <- table2_gapfilled |> 
+  filter(if_all(-tmk, ~ is.na(.) | . == 0)) %>%
+  pull(tmk) # yikes
 
-kauai_3a <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/kauai_tables/table3a_permitsApplied_ALL.csv")) %>% 
-  select(-starts_with("new"))
 
-hi_3a <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/hi_tables/table3_osdscl_ALL_draft.csv")) %>% 
-  select(-osds_cl_pre_2009)
-names(hi_3a)[-1] <- gsub("osds_cl_", "osds_class_", names(hi_3a)[-1])
+# Join gapfilled data back to other data, minus the emptys. Save the emptys
 
-# removed years not present in oahu - 2009 and pre2009 
-final_table3a_allislands <- rbind(oahu_3a,
-                                  maui_3a,
-                                  kauai_3a,
-                                  hi_3a)
-write_csv(final_table3a_allislands,file.path(driver_dir,"4_OSDS_N_Runoff/output-data/final_tables/table3a_allislands.csv"))
+table_2_withgapfill <- table2_all_islands_2010_2020 |> 
+  filter(tmk %!in% empty_tmks) |> 
+  rbind(table2_gapfilled) |> 
+  filter(tmk %!in% still_empty_tmks) # still missing a lot
 
-# 3b - need to change
-oahu_3b <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/oahu_tables/table3b_allyears_draft.csv")) 
-names(oahu_3b)[-1] <- gsub("osds_class_", "osds_present_", names(oahu_3b)[-1])
-names(oahu_3b)[-1] <- gsub("osds_cl_", "osds_present_", names(oahu_3b)[-1])
 
-maui_3b <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/maui_tables/table3b_allyears_draft.csv"))
-names(maui_3b)[-1] <- gsub("osds_cl_", "osds_present_", names(maui_3b)[-1])
-names(maui_3b)[-1] <- gsub("osds_class_", "osds_present_", names(maui_3b)[-1])
+table2_incomplete <- table2_all_islands_2010_2020 |> 
+  filter(tmk %in% still_empty_tmks)
 
-kauai_3b <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/kauai_tables/table3b_allyears_draft.csv"))
-names(kauai_3b)[-1] <- gsub("osds_cl_", "osds_present_", names(kauai_3b)[-1])
-names(kauai_3b)[-1] <- gsub("osds_class_", "osds_present_", names(kauai_3b)[-1])
 
-hi_3b <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/int/hi_tables/table3b_allyears_draft.csv"))
-names(hi_3b)[-1] <- gsub("osds_cl_", "osds_present_", names(hi_3b)[-1])
+write_csv(table_2_withgapfill,file.path(driver_dir,"4_OSDS_N_Runoff/output-data/final_tables/table2_allislands_complete_entries_2010_2020.csv"))
+
+write_csv(table2_incomplete, file.path(driver_dir,"4_OSDS_N_Runoff/output-data/final_tables/table2_allislands_INcomplete_entries_2010_2020.csv"))
+
+# ------------------ Table 3bs ----------------- #
+
+oahu_3b <- read_csv(file.path(int_dir,"step4/oahu_table3b_activeOSDS.csv")) |> 
+  rename(osds_class_2008 = osds_cl_2008) # fix name upstream
+maui_3b <- read_csv(file.path(int_dir,"step4/maui_table3b_activeOSDS.csv"))
+kauai_3b <- read_csv(file.path(int_dir,"step4/kauai_table3b_activeOSDS.csv"))
+hi_3b <- read_csv(file.path(int_dir,"step4/hi_table3b_activeOSDS.csv"))
 
 final_table3b_allislands <- rbind(oahu_3b,
                                   maui_3b,
                                   kauai_3b,
                                   hi_3b)
 
-write_csv(final_table3b_allislands,file.path(driver_dir,"4_OSDS_N_Runoff/output-data/final_tables/table3b_allislands.csv"))
+final_table3b_allislands_until2020 <- final_table3b_allislands |> 
+  select(-ends_with(c("2008","2021","2022", "2023")))
 
-# table 4s - this one has already been combined 
+write_csv(final_table3b_allislands,file.path(driver_dir,"4_OSDS_N_Runoff/output-data/final_tables/table3b_allislands.csv"))
+write_csv(final_table3b_allislands,file.path(driver_dir,"4_OSDS_N_Runoff/output-data/final_tables/table3b_allislands_until2020.csv"))
+
+# ------------------ Table 4 ----------------- #
 
 table_4_allislands <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/final_tables/table4_identified_allislands.csv"))
 
+
+# quick check - are the missing table 2 entries in here?
+
+check_still_missing <- table_4_allislands |> 
+  filter(tmk %in% still_empty_tmks) # only one. 
+
+
+still_empty_tmks <- still_empty_tmks[still_empty_tmks != 239002108]
+
+table2_incomplete <- table2_all_islands_2010_2020 |> 
+  filter(tmk %in% still_empty_tmks) |> 
+  distinct()
+
+write_csv(table2_incomplete, file.path(driver_dir,"4_OSDS_N_Runoff/output-data/final_tables/table2_allislands_INcomplete_entries_2010_2020.csv"))
 ```
 
-### Check to ensure Table 1 TMKS are accounted for. 
+### Final check to ensure Table 1 TMKS are accounted for - this will go into the paper on which had not enough information!
+
 
 ```{r}
 
 # --------- Read in Final Tables --------- #
 
-final_table2_allislands <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/final_tables/table2_allislands.csv"))
-final_table3a_allislands <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/final_tables/table3a_allislands.csv"))
-final_table3b_allislands <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/final_tables/table3b_allislands.csv"))
+final_table1_allislands <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/final_tables/table1_allislands_allosds.csv"))
 
+final_table2_allislands <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/final_tables/table2_allislands_complete_entries_2010_2020.csv"))
 
-table_1_tmks_all <- final_table1_allislands$tmk
+final_table3b_allislands <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/final_tables/table3b_allislands_until2020.csv"))
+
+final_table4_allislands <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/final_tables/table4_identified_allislands.csv"))
 
 # are all of table 2 tmks in table 1?
 
-all(final_table2_allislands$tmk %in% table_1_tmks_all) # TRUE
+all(final_table2_allislands$tmk %in% final_table1_allislands$tmk) # TRUE
 
-# do table 2 and table 3b tmks match?
+# are all of table 2 tmks in table 3b?
 
 setequal(final_table2_allislands$tmk, final_table3b_allislands$tmk) # FALSE, because some of these are commercial
 
-# Elements in Table 2 but missing from Table 3b - this one should be 0 
-setdiff(final_table2_allislands$tmk, final_table3b_allislands$tmk)
-
-# Elements in Table 3b but missing from Table 2 - this one will have table 4 classes
-length(setdiff(final_table3b_allislands$tmk, final_table2_allislands$tmk)) #89488. Way too many
 
 # are all of table 3b tmks in table 1?
 
-all(final_table3b_allislands$tmk %in% table_1_tmks_all) # TRUE
+all(final_table3b_allislands$tmk %in% final_table1_allislands$tmk) # TRUE
 
 
-# are all table 4 tms in table 1?
+# are all table 4 tmk in table 1?
 
 final_table4 <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/final_tables/table4_identified_allislands.csv"))
 
-all(final_table4$tmk %in% table_1_tmks_all) # TRUE
+all(final_table4$tmk %in% final_table1_allislands$tmk) # TRUE
 
 # are the remaining unaccounted table 1s all accounted for in our "missing info" group?
 
 # identify tmks in table one that so far have not shown up in table 4 or 3b
 
 accounted_tmks <- unique(c(final_table4$tmk, final_table2_allislands$tmk))
-unaccounted_table1_tmks <- setdiff(table_1_tmks_all, accounted_tmks) # 88229
+unaccounted_table1_tmks <- setdiff(final_table1_allislands$tmk, accounted_tmks) # 4332 - not bad
 
 # compare with dfs of missing info - these will either be missing spatial info OR missing variable info 
+```
 
-still_missing_spatial <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/final_tables/table1_tmk_registry_withOUTSpatial.csv"))
+These numbers are looking a lot better - the last step will be to look at the 4000 we can't account for. 
 
-still_missing_identifiers 
+## Query 2010 - 2020
+
+Write a function that calculates the effluent for a given row based on the following question on the clean tables. 
+Output should be table 1 with the average for each year you want. 
+
+Effluent is calculated using the following equation: 
+
+
+Effluent (g/day)  = 200 * Number of bedrooms in residence
+
+N flux (kg / day) = Effluent ga/ per day * 3.78541 L/gal x [Ni] mg / L * 10-6
+
+Where Ni represents the estimated N pollution from each class 1 through 4 of OSDS, and number of bedrooms in a residence serves as a proxy for intensity of use 
+
+
+```{r}
+
+
+
+
 
 
 ```
 
-From this, I can see that we need to:
-1) review table 2
-2) review table 3a
-3) confirm and collect all missing data
 
-### 
+
+
+
+
+```{r}
+
+
+
+
+
+
+```
+
