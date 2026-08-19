@@ -1,0 +1,476 @@
+---
+title: "OSDS Timeseries - All Islands"
+author: "Madeline Berger"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(here)
+library(janitor)
+library(tidyverse)
+library(data.table)
+
+source(here("workflow/setup.R"))
+source(here("OSDS-script/osds_pipeline_functions.R"))
+
+# While validating this script against 1a-1d, write to parallel "_v2test"
+# directories so nothing gets overwritten. Once you've diffed the outputs
+# and are confident they match, set this to "" to write to the real
+# intermediate/ paths that downstream scripts (2_SpatializeAll_TMKS.Rmd, etc.)
+# read from.
+output_tag <- "_v2test"
+
+step2_dir <- file.path(driver_dir, paste0("4_OSDS_N_Runoff/intermediate/step2-clean-permit-data", output_tag))
+step3_dir <- file.path(driver_dir, paste0("4_OSDS_N_Runoff/intermediate/step3", output_tag))
+step4_dir <- file.path(driver_dir, paste0("4_OSDS_N_Runoff/intermediate/step4", output_tag))
+dir.create(step2_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(step3_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(step4_dir, recursive = TRUE, showWarnings = FALSE)
+
+iws_permit_data <- read_csv(
+  file.path(data_dir, "osds/shared-data/2009_Present_IWSList_Permits.csv"),
+  col_types = cols(.default = "c")
+) %>% clean_names()
+```
+
+# Island config
+
+One row per island. `prefix` is the leading TMK digit for that island.
+`otp_format`/`class_encoding_type` select which branch of `encode_otp_classes()`
+applies. `dwell_reader` is the island-specific raw-dwelling-data ingestion
+function (kept separate per-island because the raw formats genuinely differ -
+see the plan notes in `osds_pipeline_functions.R`).
+
+Only Kauai is wired up below as the first migrated island (per plan: prove the
+shared functions on the cleanest input format before migrating Oahu/Maui/Hawaii).
+1a-1d remain the source of truth for the other three islands until they're
+migrated in a follow-up pass.
+
+```{r island-config}
+
+island_config <- list(
+  kauai = list(
+    prefix = "4",
+    otp_path = file.path(driver_dir, "4_OSDS_N_Runoff/large-input-data/OSDS_HIGIS_2010/On-site_Sewage_Disposal_Systems_-_Kauai.csv"),
+    class_encoding_type = "wide_quantity"
+  )
+  # oahu  = list(prefix = "1", ..., class_encoding_type = "text_label"),   # TODO: migrate
+  # maui  = list(prefix = "2", ..., class_encoding_type = "wide_quantity"), # TODO: migrate
+  # hawaii = list(prefix = "3", ..., class_encoding_type = "wide_quantity") # TODO: migrate
+)
+
+```
+
+# Island-specific dwelling data readers
+
+Kept separate per island (see plan notes) because the raw formats differ:
+fixed-width text (Oahu, Hawaii), pre-parsed Excel (Maui), one big CSV (Kauai).
+Each returns a standardized-enough frame with at least `tmk`, `tax_year`,
+`bedrooms`.
+
+```{r dwell-readers}
+
+read_dwell_kauai <- function() {
+  kauai_raw_dwell <- fread(file.path(
+    driver_dir,
+    "4_OSDS_N_Runoff/large-input-data/Dwelling_Data_Raw/Kauai_DwellRaw_1122025/KAUAI_CO_DWELDAT_UHDataRequest_010826.csv"
+  ))
+
+  kauai_raw_dwell %>%
+    as_tibble() %>%
+    clean_names() %>%
+    mutate(
+      parid = str_trim(as.character(parid_full_parcel_id)),
+      tax_id = substr(parid, 1, 8),
+      tmk = paste0("4", tax_id)
+    )
+}
+
+```
+
+# Kauai pipeline
+
+### Step 0: Authoritative TMK list
+
+```{r kauai-step0}
+
+cfg <- island_config$kauai
+
+iws_kauai_permits_raw <- iws_permit_data %>%
+  mutate(tmk = as.character(tmk)) %>%
+  filter(str_starts(tmk, cfg$prefix))
+
+iws_kauai_permits_tmk <- iws_kauai_permits_raw %>% pull(tmk) %>% unique()
+
+otp_kauai_raw <- read_csv(cfg$otp_path, col_types = cols(.default = "c")) %>%
+  clean_names() %>%
+  mutate(tmk = as.character(tmk))
+
+otp_kauai_tmk <- otp_kauai_raw %>% pull(tmk) %>% unique()
+
+kauai_unchanged <- otp_kauai_raw %>% filter(tmk %!in% iws_kauai_permits_tmk)
+kauai_updated   <- otp_kauai_raw %>% filter(tmk %in% iws_kauai_permits_tmk)
+kauai_new       <- iws_kauai_permits_raw %>% filter(tmk %!in% otp_kauai_tmk)
+
+kauai_master_tmk_list <- unique(c(iws_kauai_permits_tmk, otp_kauai_tmk))
+
+cat("Kauai Step 0: baseline =", length(otp_kauai_tmk),
+    "| new permits =", length(iws_kauai_permits_tmk),
+    "| master list =", length(kauai_master_tmk_list), "\n")
+
+```
+
+### Step 1: Clean dwelling data
+
+```{r kauai-step1}
+
+kauai_dwell <- read_dwell_kauai()
+
+kauai_dwell_tmks_forjoin <- kauai_dwell %>%
+  select(-tax_year) %>%
+  distinct()
+
+cat("Kauai Step 1: unique dwelling tmks =", length(unique(kauai_dwell$tmk)), "\n")
+
+```
+
+### Step 2 + 2b: Permit join, no-dwell split, Tables 1/2a/2b/3
+
+```{r kauai-step2}
+
+iws_kauai_permits <- iws_kauai_permits_raw %>%
+  rowid_to_column("permit_id") %>%
+  mutate(approval_date = mdy(final_approval_date), year = year(approval_date))
+
+iws_kauai_dwell_join <- inner_join(iws_kauai_permits, kauai_dwell_tmks_forjoin, by = "tmk") %>%
+  distinct()
+
+iws_kauai_NOdwell <- iws_kauai_permits %>%
+  filter(tmk %!in% iws_kauai_dwell_join$tmk)
+
+write_csv(iws_kauai_NOdwell, file.path(step2_dir, "kauai_iwspermits_nodwellinginfo.csv"))
+
+master_clean_kauai <- build_master_clean(iws_kauai_permits, iws_kauai_NOdwell$tmk)
+
+kauai_tables <- build_permit_tables(
+  master_clean_kauai,
+  dwell_data = kauai_dwell,
+  dwell_tmks = kauai_dwell_tmks_forjoin$tmk,
+  bed_col = "bedrooms",
+  tax_year_col = "tax_year"
+)
+
+write_csv(kauai_tables$table1,            file.path(step2_dir, "kauai_table1_tmk_registry_all.csv"))
+write_csv(kauai_tables$table1_commercial, file.path(step2_dir, "kauai_table1_tmk_registry_commercial.csv"))
+write_csv(kauai_tables$table2a,           file.path(step2_dir, "kauai_table2a_bedrooms_sum.csv"))
+write_csv(kauai_tables$table2b,           file.path(step2_dir, "kauai_table2b_newbedrooms_mode.csv"))
+write_csv(kauai_tables$table3,            file.path(step2_dir, "kauai_table3_newclass_all.csv"))
+
+cat("Kauai Step 2b: permits issued =", nrow(iws_kauai_permits),
+    "| with dwelling info =", nrow(iws_kauai_dwell_join),
+    "| without =", nrow(iws_kauai_NOdwell), "\n")
+
+```
+
+### Step 3: Reconcile against 2010 OTP baseline
+
+#### Unchanged since OTP
+
+```{r kauai-step3-unchanged}
+
+kauai_unchanged_clean <- clean_tmk(kauai_unchanged, cfg$prefix, "tmk")
+kauai_dwell_clean <- clean_tmk(kauai_dwell, cfg$prefix, "tmk")
+
+kauai_unchanged_encoded <- kauai_unchanged_clean %>%
+  select(-any_of(c("objectid", "x", "y"))) %>%
+  distinct() %>%
+  encode_otp_classes("wide_quantity")
+
+kauai_unchgd_encoded_dwell <- left_join(kauai_unchanged_encoded, kauai_dwell_clean, by = "tmk") %>%
+  distinct()
+
+kauai_card_dwell_summary <- kauai_unchgd_encoded_dwell %>%
+  group_by(tmk) %>%
+  summarize(
+    n_buildings = if ("card" %in% names(.)) n_distinct(card, na.rm = TRUE) else 1,
+    in_dwelldat = any(!is.na(tax_year) & tax_year != ""),
+    .groups = "drop"
+  )
+
+kauai_otp_unchanged_table1 <- kauai_unchgd_encoded_dwell %>%
+  mutate(
+    n_permits = case_when(
+      encoded_sum %in% c(1, 2, 4, 8)       ~ 1,
+      encoded_sum %in% c(3, 5, 6, 9, 10, 12) ~ 2,
+      encoded_sum %in% c(7, 11, 13, 14)     ~ 3,
+      encoded_sum == 15                     ~ 4,
+      TRUE                                  ~ 99999
+    ),
+    n_years = 1,
+    min_year = 2010,
+    max_year = 2010,
+    n_addresses = "unknown",
+    status_since_otp = "unchanged since otp",
+    scenario = case_when(
+      n_permits == 1 & n_years == 1 ~ "Simple",
+      n_addresses == "unknown"      ~ "Unknown",
+      n_years > 1                   ~ "Potential Upgrade",
+      TRUE                          ~ "Multiple Permits Same Year"
+    ),
+    # unchanged tmks only ever have the single 2010 baseline value, so this
+    # always collapses to one class number - still worth populating rather
+    # than leaving NA, and classify_upgrade_scenario() correctly falls
+    # through to "no upgrade detected" for a single-value story.
+    permit_story = as.character(encoded_sum),
+    upgrade_scenario = classify_upgrade_scenario(permit_story)
+  ) %>%
+  left_join(kauai_card_dwell_summary, by = "tmk") %>%
+  select(tmk, starts_with("n_"), min_year, max_year, in_dwelldat, status_since_otp, scenario,
+         n_buildings, permit_story, upgrade_scenario) %>%
+  distinct(tmk, .keep_all = TRUE)
+
+kauai_otp_unchanged_table2 <- kauai_unchgd_encoded_dwell %>%
+  filter(!is.na(tax_year) & tax_year != "") %>%
+  mutate(bed_rooms = as.numeric(bedrooms)) %>%
+  group_by(tmk, tax_year) %>%
+  summarize(total_beds = sum(bed_rooms, na.rm = TRUE), .groups = "drop") %>%
+  pivot_wider(id_cols = tmk, names_from = tax_year, values_from = total_beds, names_sort = TRUE) %>%
+  select(tmk, matches("^[0-9]{4}")) %>%
+  rename_with(~ paste0("bedrooms_", .x), matches("^[0-9]{4}"))
+
+kauai_otp_unchanged_table3 <- kauai_unchgd_encoded_dwell %>%
+  mutate(year = 2010) %>%
+  select(tmk, year, encoded_sum) %>%
+  distinct() %>%
+  pivot_wider(id_cols = tmk, names_from = year, values_from = encoded_sum, names_prefix = "osds_class_")
+
+kauai_otp_unchanged_table4 <- kauai_unchanged_clean %>%
+  select(tmk, any_of(c("commercial", "pittcode", "pitt_code", "x", "y"))) %>%
+  rename(pitt_code = any_of(c("pittcode", "pitt_code"))) %>%
+  filter(!is.na(commercial)) %>%
+  mutate(
+    pitt_code_num = as.numeric(pitt_code),
+    comm_assignment = classify_pitt_code(pitt_code_num)
+  ) %>%
+  select(-pitt_code_num) %>%
+  distinct(tmk, .keep_all = TRUE)
+
+write_csv(kauai_otp_unchanged_table1, file.path(step3_dir, "kauai_table1_tmk_registry_UNCHANGED.csv"))
+write_csv(kauai_otp_unchanged_table2, file.path(step3_dir, "kauai_table2_bedrooms_UNCHANGED.csv"))
+write_csv(kauai_otp_unchanged_table3, file.path(step3_dir, "kauai_table3_classes_UNCHANGED.csv"))
+write_csv(kauai_otp_unchanged_table4, file.path(step3_dir, "kauai_table4_commercial_UNCHANGED_draft.csv"))
+
+```
+
+#### Updated since OTP
+
+```{r kauai-step3-updated}
+
+table_2_new <- read_csv(file.path(step2_dir, "kauai_table2a_bedrooms_sum.csv"), col_types = cols(.default = "c")) %>%
+  clean_tmk(cfg$prefix, "tmk") %>%
+  rename_with(~ paste0("newbeds", .x), !tmk)
+
+kauai_updated_clean <- clean_tmk(kauai_updated, cfg$prefix, "tmk")
+
+kauai_updated_forjoin <- kauai_updated_clean %>%
+  select(tmk, any_of(c("pittcode", "pitt_code")), commercial, ttl_bdrms) %>%
+  rename(otp_ttl_bdrms = ttl_bdrms, pitt_code = any_of(c("pittcode", "pitt_code"))) %>%
+  mutate(
+    pitt_code_num = as.numeric(pitt_code),
+    comm_assignment = classify_pitt_code(pitt_code_num)
+  ) %>%
+  select(-pitt_code_num)
+
+table_2_updated <- table_2_new %>% filter(tmk %in% kauai_updated_forjoin$tmk)
+updates_notInTable2 <- setdiff(kauai_updated_forjoin$tmk, table_2_updated$tmk)
+
+table4_withUpdates <- kauai_updated_forjoin %>% filter(tmk %in% updates_notInTable2)
+write_csv(table4_withUpdates, file.path(step3_dir, "kauai_table4_updated.csv"))
+
+kauai_updated_withNewbeds <- kauai_updated_forjoin %>%
+  left_join(table_2_updated, by = "tmk") %>%
+  mutate(otp_ttl_bdrms = as.numeric(otp_ttl_bdrms)) %>%
+  filter(otp_ttl_bdrms != 0)
+
+year_cols <- kauai_updated_withNewbeds %>% select(starts_with("newbeds")) %>% names()
+latest_bed_col <- if (length(year_cols) > 0) tail(year_cols, 1) else NULL
+
+kauai_updated_withBedFlags <- kauai_updated_withNewbeds %>%
+  mutate(
+    match_index = {
+      match_matrix <- pick(all_of(year_cols)) == otp_ttl_bdrms
+      match_matrix[is.na(match_matrix)] <- FALSE
+      if_else(rowSums(match_matrix) > 0, max.col(match_matrix, ties.method = "first"), NA_integer_)
+    },
+    match_name = year_cols[match_index],
+    latest_val = if (!is.null(latest_bed_col)) as.numeric(.data[[latest_bed_col]]) else NA_real_,
+    bed_trend = case_when(
+      is.na(latest_val)           ~ NA_character_,
+      otp_ttl_bdrms < latest_val  ~ "Expansion since OTP",
+      otp_ttl_bdrms > latest_val  ~ "Shrink - double check",
+      otp_ttl_bdrms == latest_val ~ "Perfect Match",
+      TRUE                        ~ NA_character_
+    ),
+    data_presence = if_else(
+      if_all(starts_with("newbeds"), ~ .x == "0" | is.na(.x) | .x == 0),
+      "Empty (All 0 or NA)",
+      "Bedrooms Recorded"
+    )
+  )
+
+year_built <- kauai_dwell_clean %>%
+  filter(tmk %in% kauai_updated_withBedFlags$tmk) %>%
+  select(tmk, year_built = any_of(c("yrblt", "year_built"))) %>%
+  filter(!is.na(year_built) & year_built != "") %>%
+  distinct() %>%
+  group_by(tmk) %>%
+  summarize(
+    year_built_combined = str_flatten(as.character(year_built), collapse = ", "),
+    count_buildyears = n(),
+    .groups = "drop"
+  ) %>%
+  clean_tmk(cfg$prefix, "tmk")
+
+kauai_updated_with_BEDflags_gapfilled <- kauai_updated_withBedFlags %>%
+  left_join(year_built, by = "tmk") %>%
+  mutate(
+    gapfill_flag = if_else(
+      data_presence == "Empty (All 0 or NA)" & otp_ttl_bdrms > 0,
+      "Gapfilled with OTP value",
+      "Used dwell data"
+    )
+  ) %>%
+  mutate(across(starts_with("newbeds"), ~ {
+    fill_condition <- data_presence == "Empty (All 0 or NA)" & otp_ttl_bdrms > 0
+    if_else(fill_condition, as.numeric(otp_ttl_bdrms), as.numeric(.x))
+  })) %>%
+  mutate(across(starts_with("newbeds"), ~ {
+    col_year <- as.numeric(str_extract(cur_column(), "\\d{4}"))
+    min_build_yr <- as.numeric(str_extract(year_built_combined, "^\\d{4}"))
+    case_when(
+      gapfill_flag == "Used dwell data"           ~ as.numeric(.x),
+      is.na(min_build_yr) | min_build_yr <= 2010   ~ as.numeric(.x),
+      min_build_yr > col_year                       ~ NA_real_,
+      TRUE                                           ~ as.numeric(.x)
+    )
+  }))
+
+table_2_updatedGapfilled <- kauai_updated_with_BEDflags_gapfilled %>% select(tmk, starts_with("newbeds"))
+write_csv(table_2_updatedGapfilled, file.path(step3_dir, "kauai_table2_updated_gapfilled.csv"))
+
+bedFlags_forTable1 <- kauai_updated_with_BEDflags_gapfilled %>%
+  select(tmk, bed_trend, data_presence, year_built_combined, count_buildyears, gapfill_flag)
+write_csv(bedFlags_forTable1, file.path(step3_dir, "kauai_bedflags_fortable1.csv"))
+
+# --- class gap-fill / upgrade scenario logic ---
+
+table_3_new <- read_csv(file.path(step2_dir, "kauai_table3_newclass_all.csv"), col_types = cols(.default = "c")) %>%
+  clean_tmk(cfg$prefix, "tmk") %>%
+  rename_with(~ paste0("newclass", .x), !tmk)
+
+kauai_updated_withClass_enc <- kauai_updated_clean %>%
+  select(tmk, osds_qty, starts_with("class")) %>%
+  select(-any_of(c("class"))) %>%
+  distinct() %>%
+  pivot_longer(cols = starts_with("class"), names_to = "class", values_to = "quantity") %>%
+  filter(!is.na(quantity) & quantity != 0 & quantity != -9999) %>%
+  rename(ttl_osds_2010 = osds_qty) %>%
+  mutate(osds_class_otp = case_when(
+    class == "class_iv"  ~ 8,
+    class == "class_iii" ~ 4,
+    class == "class_ii"  ~ 2,
+    class == "class_i"   ~ 1,
+    TRUE                 ~ NA_real_
+  )) %>%
+  pivot_wider(id_cols = c("tmk", "ttl_osds_2010"), names_from = "class", values_from = "osds_class_otp") %>%
+  mutate(otp_encoded_sum = rowSums(across(starts_with("class")), na.rm = TRUE))
+
+kauai_updated_withClassEnc_New <- kauai_updated_withClass_enc %>% left_join(table_3_new, by = "tmk")
+
+class_cols <- kauai_updated_withClassEnc_New %>% select(starts_with("newclass")) %>% names()
+
+table3_updated_classmatch <- kauai_updated_withClassEnc_New %>%
+  mutate(
+    match_index = {
+      match_matrix <- pick(all_of(class_cols)) == otp_encoded_sum
+      match_matrix[is.na(match_matrix)] <- FALSE
+      if_else(rowSums(match_matrix) > 0, max.col(match_matrix, ties.method = "first"), NA_integer_)
+    },
+    match_name = class_cols[match_index],
+    data_presence = if_else(
+      if_all(starts_with("newclass"), ~ .x == "0" | is.na(.x) | .x == 0),
+      "Empty (All 0 or NA)",
+      "OSDS Permit Recorded"
+    )
+  )
+
+table_1_new_forupdate <- read_csv(file.path(step2_dir, "kauai_table1_tmk_registry_all.csv"), col_types = cols(.default = "c")) %>%
+  clean_tmk(cfg$prefix, "tmk")
+
+update_logic_df <- table3_updated_classmatch %>%
+  left_join(table_1_new_forupdate, by = "tmk") %>%
+  select(tmk, otp_encoded_sum, any_of(c("min_year", "max_year", "n_addresses")), starts_with("newclass")) %>%
+  mutate(
+    legacy_val = as.numeric(otp_encoded_sum),
+    v2009 = if ("newclass2009" %in% names(.)) as.numeric(newclass2009) else NA_real_,
+    v2010 = if ("newclass2010" %in% names(.)) as.numeric(newclass2010) else NA_real_,
+    scenario_match_flag = case_when(
+      legacy_val == v2009 | legacy_val == v2010 ~ "matched 2009 or 2010",
+      is.na(v2009) & is.na(v2010)                 ~ "no data to compare",
+      TRUE                                       ~ "unmatched"
+    )
+  )
+
+update_logic_refined_cl <- update_logic_df %>%
+  mutate(newpre_2009 = as.character(case_when(
+    scenario_match_flag == "matched 2009 or 2010"               ~ NA_real_,
+    scenario_match_flag %in% c("unmatched", "no data to compare") ~ legacy_val,
+    TRUE                                                        ~ NA_real_
+  ))) %>%
+  select(tmk, newpre_2009, starts_with("newclass200"), starts_with("newclass201"), starts_with("newclass202"), everything()) %>%
+  rowwise() %>%
+  mutate(unique_story = {
+    vals <- c_across(c(newpre_2009, starts_with("newclass")))
+    vals <- vals[!is.na(vals) & vals != "" & vals != "NA"]
+    paste(unique(vals), collapse = "|")
+  }) %>%
+  ungroup() %>%
+  mutate(upgrade_scenario = classify_upgrade_scenario(unique_story))
+
+table_3_updated_new <- update_logic_refined_cl %>% select(tmk, newpre_2009, starts_with("newclass"))
+write_csv(table_3_updated_new, file.path(step3_dir, "kauai_table3_new_updated.csv"))
+
+# Named "_updated" so assemble_final_tables() can tell this fuller story
+# (baseline + new permits) apart from the simpler one already attached to
+# table_1_new/table_1_unchanged, and prefer this version when both exist.
+class_flag_forTable1 <- update_logic_refined_cl %>%
+  select(tmk, class_match_flag = scenario_match_flag,
+         permit_story_updated = unique_story, upgrade_scenario_updated = upgrade_scenario)
+write_csv(class_flag_forTable1, file.path(step3_dir, "kauai_classflags_fortable1.csv"))
+
+```
+
+### Step 4: Assemble final tables
+
+```{r kauai-step4}
+
+kauai_final <- assemble_final_tables(
+  island = "kauai",
+  prefix = cfg$prefix,
+  step2_dir = step2_dir,
+  step3_dir = step3_dir,
+  out_dir = step4_dir,
+  master_tmk_list = kauai_master_tmk_list
+)
+
+```
+
+Kauai is now fully wired through the shared functions. Next: migrate Oahu, Maui,
+and Hawaii the same way (add each to `island_config`, add its `read_dwell_*()`
+reader, and reuse `build_master_clean()` / `build_permit_tables()` /
+`encode_otp_classes()` / `assemble_final_tables()` for the rest) - see the plan
+file for the per-island differences (OTP baseline format, raw dwelling format)
+that still need explicit handling.

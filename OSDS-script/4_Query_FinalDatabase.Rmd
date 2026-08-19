@@ -276,27 +276,260 @@ N flux (kg / day) = Effluent ga/ per day * 3.78541 L/gal x [Ni] mg / L * 10-6
 
 Where Ni represents the estimated N pollution from each class 1 through 4 of OSDS, and number of bedrooms in a residence serves as a proxy for intensity of use 
 
+N loading by class assignment - note this is averaging the ranges in Whittier and El Kadi
 
-```{r}
+| Class | N Loading (mg/L) Range | Average |
+|:--------------|:--------------|:--------------|
+| Class 1| 1 | 1 |
+| Class 2 | 39 – 82 | 60.5 |
+| Class 3 | 7 - 60 | 33.5 |
+| Class 4 | 15-90 | 37.5 |
 
 
 
+```{r query-effluent}
 
+# read in and pivot table  
+
+osds_main <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/final_tables/table1_allislands_allosds.csv")) |> 
+  select(tmk)
+
+bedrooms_wide <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/final_tables/table2_allislands_complete_entries_2010_2020.csv"))
+
+class_wide <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/final_tables/table3b_allislands_until2020.csv"))
+
+
+commercial_long <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/final_tables/table4_identified_allislands.csv"))
+
+
+# class look up - include encoded! Key assumption in this table. Think about how it would work to split bedroom number.
+
+ni_lookup <- data.frame(
+  class = c(0,1,2,4,8),
+  ni_mg_l = c(0,1,60.5,33.5,37.5)
+)
+
+# ------------ expand ni look up to include average classess -------- # 
+
+library(tidyverse)
+
+# 1. Define your base classes and their specific [Ni] concentrations (mg/L)
+# Note: Bit flags MUST be powers of 2 (1, 2, 4, 8, 16, etc.)
+base_classes <- tribble(
+  ~bit_flag, ~class_name, ~ni_mg_l,
+  0,         "No class",  0,
+  1,         "Class_1",   1.0,
+  2,         "Class_2",   60.5,
+  4,         "Class_3",   33.5,
+  8,         "Class_4",   37.5
+)
+
+# 2. Function to decode a bitwise sum into its constituent bit flags
+decode_bitwise <- function(sum_val, valid_flags) {
+  # Bitwise AND logic: checks which flags are set in sum_val
+  valid_flags[bitwAnd(sum_val, valid_flags) > 0]
+}
+
+# 3. Generate all possible bitwise combinations dynamically
+max_combination <- sum(base_classes$bit_flag)
+
+ni_bitwise_lookup <- tibble(encoded_class = 1:max_combination) %>%
+  # Extract active bit flags for each encoded sum
+  mutate(
+    active_flags = map(encoded_class, ~ decode_bitwise(.x, base_classes$bit_flag))
+  ) %>%
+  # Filter out invalid combinations if sum doesn't match any flag combination
+  filter(map_int(active_flags, length) > 0) %>%
+  
+  # Calculate average [Ni] and list included classes
+  mutate(
+    # Average [Ni] of all active classes in the sum
+    ni_mg_l = map_dbl(active_flags, function(flags) {
+      base_classes %>%
+        filter(bit_flag %in% flags) %>%
+        summarize(mean_ni = mean(ni_mg_l)) %>%
+        pull(mean_ni)
+    }),
+    
+    # Human-readable string of included classes
+    classes_included = map_chr(active_flags, function(flags) {
+      base_classes %>%
+        filter(bit_flag %in% flags) %>%
+        pull(class_name) %>%
+        paste(collapse = " + ")
+    }),
+    
+    # Count of active classes in the sum
+    num_classes = map_int(active_flags, length)
+  ) %>%
+  # Clean up table output
+  select(encoded_class, classes_included, num_classes, ni_mg_l) |> 
+  # add 0
+  rbind(data.frame(
+    encoded_class = 0,
+    classes_included = "No classes",
+    num_classes = 0,
+    ni_mg_l = 0
+  ))
+
+# Inspect the result
+print(ni_bitwise_lookup)
+
+# ------------------- # ---------------------------- #
+
+# pivot longer) 
+bedrooms_long <- bedrooms_wide |> 
+  pivot_longer(cols = -tmk,
+               names_to = "year",
+               values_to = "bedrooms") |> 
+  mutate(year_num = as.numeric(substr(year,10,13))) |> 
+  mutate(bedrooms = ifelse(is.na(bedrooms),0,bedrooms)) # crucial so that years with no record are 0 effluent in stead of NA
+
+
+class_long <- class_wide |> 
+  pivot_longer(cols = -tmk,
+               names_to = "year",
+               values_to = "encoded_class") |> 
+  mutate(year_num = as.numeric(substr(year,12,15)))
+
+
+#target_years <- 2010:2014  # use c(2015) for a single year
+
+annual_effluent_nflux_res <- bedrooms_long %>%
+  # Join class by both ID and Year
+  inner_join(class_long, by = c("tmk", "year_num")) %>%
+  
+  # Join main OSDS table for static metadata (e.g., island, location)
+  inner_join(osds_main, by = "tmk") %>%
+  
+  # Join Nitrogen concentration lookup by class
+  left_join(ni_bitwise_lookup, by = "encoded_class") %>%
+  
+  # Apply Equations
+  mutate(
+    # Effluent (gal/day) = 200 * bedrooms
+    effluent_gpd  = 200 * bedrooms,
+    
+    # N flux (kg/day) = Effluent * 3.78541 L/gal * [Ni] mg/L * 10^-6 kg/mg
+    n_flux_kg_day = effluent_gpd * 3.78541 * ni_mg_l * 1e-6,
+    n_flux_kg_year = n_flux_kg_day * 365
+  )
+
+# run for commercial. not sure this i s interesting because they don't change year over year. 
+
+# idea: create a random matrix of year and min max combiations, which we can sample for different runs
+
+year_seq = seq(from = 2010, to = 2020, by = 1)
+
+tmk_year_df <- data.frame(
+  tmk = rep(unique(commercial_long$tmk),11),
+  year_num = rep(year_seq,2358)
+) 
+
+commercial_long <- distinct(commercial_long, tmk, .keep_all = T)
+
+
+annual_effluent_nflux_comm <- commercial_long %>%
+  # Add year - this will be arbitraty but we need to preserve the year in class
+  full_join(tmk_year_df, by = "tmk") |> 
+  # join class by both ID and Year
+  inner_join(class_long, by = c("tmk","year_num")) |>  # these are changing year over year
+  
+  # Join main OSDS table for static metadata (e.g., island, location)
+  #inner_join(osds_main, by = "tmk") %>%
+  
+  # Join Nitrogen concentration lookup by class
+  left_join(ni_bitwise_lookup, by = "encoded_class") %>%
+  
+  # Apply Equations
+  mutate(
+    # Effluent (gal/day) = 200 * bedrooms
+    effluent_gpd  = median_effluent_gpd,
+    
+    # N flux (kg/day) = Effluent * 3.78541 L/gal * [Ni] mg/L * 10^-6 kg/mg
+    n_flux_kg_day = effluent_gpd * 3.78541 * ni_mg_l * 1e-6,
+    
+    n_flux_kg_year = n_flux_kg_day * 365
+  ) 
+  
+
+# ------------ Validate,  Clean up and Save Huge Tables --------------- #
+
+# get list of tmks from table 1 that should show changes over time (ie updated)
+
+tmks_updates <- table_1_complete |> 
+  filter(upgrade_scenario == "multiple osds with cesspool upgraded") |> 
+  pull(tmk)
+
+residential_effluent_everyear_clean <- annual_effluent_nflux_res |> 
+  select(tmk,year_num, n_flux_kg_day,n_flux_kg_year) |> 
+  mutate(year_num = as.numeric(year_num)) |> 
+  arrange(tmk, year_num)
+
+res_change_check <- residential_effluent_everyear_clean |> 
+  filter(tmk %in% tmks_updates)
+
+commercial_effluent_everyear_clean <- annual_effluent_nflux_comm |> 
+  select(tmk,year_num, n_flux_kg_day,n_flux_kg_year) |> 
+  mutate(year_num = as.numeric(year_num)) |> 
+  arrange(tmk, year_num)
+
+# save - this wont run without wifi but thats ok.
+
+write_csv(residential_effluent_everyear_clean,
+          file.path(driver_dir,"4_OSDS_N_Runoff/output-data/calculated_effluent/v0/residential_kg_pyear.csv"))
+
+write_csv(commercial_effluent_everyear_clean,
+          file.path(driver_dir,"4_OSDS_N_Runoff/output-data/calculated_effluent/v0/non_residential_kg_pyear.csv"))
 
 
 ```
 
+Versioning Notes:
+v0 will be using what I found in the tables but clearly needs to be updated.
+What is the most up to date version>
 
+## Join Calculated Effluent to Spatial Points - Save
 
-
-
+Use table one with spatial information here! This step should probably be moved to the effluent calculation model. 
 
 ```{r}
 
+# calculate effluent for 2010 - 2014 per point and 2015 - 2020 per point
 
+alltypes_effluent_peryear <- rbind(residential_effluent_everyear_clean,
+                                   commercial_effluent_everyear_clean)
 
+effluent_multi_year_averages <- alltypes_effluent_peryear |> 
+  group_by(tmk) |> 
+  summarize(
+    n_avg_2010_2014 = mean(n_flux_kg_year[year_num >= 2010 & year_num <= 2014]),
+    n_avg_2015_2020 = mean(n_flux_kg_year[year_num >= 2015 & year_num <= 2020])
+  ) |>
+  mutate(tmk = as.character(tmk))
 
+# cool!!
+change_check <- effluent_multi_year_averages |> 
+  filter(n_avg_2010_2014 != n_avg_2015_2020) 
 
+# 0.1461011, or 14.6 percent have shown some change in effluent
+
+# read in spatial points
+
+table_1_spatial <- st_read(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/final_tables/table1_tmk_registry_withSpatial.shp"))
+
+length(unique(table_1_spatial$tmk))
+
+# Join res effluent
+
+table_1_spatial_effleunt <- table_1_spatial |> 
+  left_join(effluent_multi_year_averages, by = "tmk") |> 
+  filter(!is.na(n_avg_2010_2014) & !is.na(n_avg_2015_2020)) 
+
+# 95.7 % remain. SICK, N = 4302 dropped out
+
+st_write(table_1_spatial_effleunt,
+          file.path(driver_dir,"4_OSDS_N_Runoff/output-data/calculated_effluent/v0/alleffluent_5yraverages_spatial.gpkg"))
 
 ```
 
