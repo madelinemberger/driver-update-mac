@@ -1,0 +1,179 @@
+---
+title: "6_DatabasePaper_ResultsFigs"
+author: "Madeline Berger"
+date: "2026-08-25"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(here)
+library(janitor)
+source(here("workflow/setup.R"))
+
+```
+
+# Summary
+
+This script houses code for tallying results and creating figures for the OSDS Database publication
+
+
+```{r}
+
+# read in final databases 
+
+residential_effluent_everyear_clean <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/calculated_effluent/v0/residential_kg_pyear.csv"))
+
+commercial_effluent_everyear_clean <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/calculated_effluent/v0/non_residential_kg_pyear.csv"))
+
+# full table 1
+
+table_1_spatial_effleunt <- st_read(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/calculated_effluent/v0/alleffluent_5yraverages_spatial.gpkg"))
+
+table1_nonspatial <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/final_tables/table1_allislands_allosds.csv"))
+
+
+```
+
+## Result One: Total Number of OSDS by Location and Island
+
+```{r result-1}
+
+
+# total total 
+
+total_tmks <- length(unique(table1_nonspatial$tmk))
+
+# totals with effluent
+total_tmks_accounted <- length(unique(commercial_effluent_everyear_clean$tmk)) + length(unique(residential_effluent_everyear_clean$tmk))
+
+# unaccounted for due to missing effluent variable
+
+unaccounted <- setdiff(c(unique(commercial_effluent_everyear_clean$tmk),unique(residential_effluent_everyear_clean$tmk)),unique(residential_effluent_everyear_clean$tmk))
+
+
+# use other lists to assign to residential, non residential or unknown
+
+table1_assigned <- table1_nonspatial |> 
+  mutate(
+    county_code = substr(tmk, 1, 1),
+    category = case_when(
+      tmk %in% residential_effluent_everyear_clean$tmk ~ "res",
+      tmk %in% commercial_effluent_everyear_clean$tmk  ~ "nonres",
+      TRUE                                              ~ "unknown"
+    )
+  )
+
+
+# by county
+
+table1_nonspatial_county <- table1_assigned |> 
+  mutate(county_code = substr(tmk,1,1)) |> 
+  group_by(county_code,category) |> 
+  summarize(
+    tmk_n = length(unique(tmk)),
+    permit_n = sum(n_permits, na.rm = T),
+    .groups = "drop"
+  ) |> 
+  pivot_wider(id_cols = county_code, names_from = category, values_from = tmk_n, values_fill = 0) |> 
+  # row totals (totals across categories for each county)
+  mutate(
+    tmk_n_total = rowSums(across(-starts_with("county")))
+  ) |> 
+  # bottom row for column totals (totals across all counties)
+  adorn_totals("row", fill = "-", na.rm = TRUE)
+
+
+
+```
+
+
+## Result 2: Temporal Shifts in OSDS Over the Past Decade 
+
+```{r results-2}
+
+library(purrr)
+
+# read in table 3 a and 3 b
+
+table3a_wide <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/final_tables/table3a_allislands_until2020.csv"))
+
+table3b_wide <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/final_tables/table3b_allislands_until2020.csv"))
+
+# pivot longer for line plot and re explode bits 
+
+class_bits <- c("Class 1" = 1, "Class 2" = 2, "Class 3" = 4, "Class 4" = 8)
+
+table_3a_long <- table3a_wide |> 
+  pivot_longer(cols = starts_with("osds"), names_to = "year_raw", values_to = "raw_val") |> 
+  mutate(year_num = parse_number(year_raw)) |>
+  filter(!is.na(raw_val)) |>
+  mutate(
+    osds_class = map(raw_val, \(val) {
+      names(class_bits)[bitwAnd(val, class_bits) > 0]
+    })
+  ) |> 
+  unnest(osds_class)
+  
+
+plot_data <- table_3a_long |> 
+  filter(year_num %!in% c(2009,2010)) |> 
+  group_by(year_num, osds_class) |> 
+  summarize(count = n(), .groups = "drop")
+
+ggplot(plot_data, aes(x = year_num, y = count, fill = factor(osds_class), group = factor(osds_class))) +
+  geom_area(alpha = 0.85, color = "white", linewidth = 0.3) +
+  scale_x_continuous(breaks = unique(plot_data$year_num), expand = c(0, 0)) +
+  scale_y_continuous(expand = c(0, 0)) +
+  labs(
+    title = "OSDS Class Changes Over Time",
+    x = "Year",
+    y = "Number of OSDS Permits Applied for",
+    fill = "OSDS Class"
+  ) +
+  theme_minimal()
+
+
+# repeat for table 3b
+table_3b_long <- table3b_wide |> 
+  pivot_longer(cols = starts_with("osds"), names_to = "year", values_to = "osds_class")
+
+
+table_3b_long <- table3b_wide |> 
+  pivot_longer(cols = starts_with("osds"), names_to = "year_raw", values_to = "raw_val") |> 
+  mutate(year_num = parse_number(year_raw)) |>
+  filter(!is.na(raw_val)) |>
+  mutate(
+    osds_class = map(raw_val, \(val) {
+      names(class_bits)[bitwAnd(val, class_bits) > 0]
+    })
+  ) |> 
+  unnest(osds_class)
+
+
+plot_data_b <- table_3b_long |> 
+  filter(year_num %!in% c(2008,2009)) |> 
+  group_by(year_num, osds_class) |> 
+  summarize(count = n(), .groups = "drop")
+
+ggplot(plot_data_b, aes(x = year_num, y = count, fill = factor(osds_class), group = factor(osds_class))) +
+  geom_area(alpha = 0.85, color = "white", linewidth = 0.3) +
+  scale_x_continuous(breaks = unique(plot_data_b$year_num), expand = c(0, 0)) +
+  scale_y_continuous(expand = c(0, 0)) +
+  labs(
+    title = "Active OSDS Over Time",
+    x = "Year",
+    y = "Number of Active OSDSS",
+    fill = "OSDS Class"
+  ) +
+  theme_minimal()
+
+```
+
+
+
+
+## Result 3: Spatial Shifts in OSDS over the past Decade by Moku
+
+Here we will designate moku by increase or decrease over the 10 year span. 

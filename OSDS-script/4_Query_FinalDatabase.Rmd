@@ -176,6 +176,25 @@ write_csv(table_2_withgapfill,file.path(driver_dir,"4_OSDS_N_Runoff/output-data/
 
 write_csv(table2_incomplete, file.path(driver_dir,"4_OSDS_N_Runoff/output-data/final_tables/table2_allislands_INcomplete_entries_2010_2020.csv"))
 
+# ------------------ Table 3as ----------------- #
+
+oahu_3a <- read_csv(file.path(int_dir,"step4/oahu_table3a_permitsApplied_ALL.csv")) |> 
+  rename(osds_class_pre2009 = newpre_2009) # fix name upstream
+maui_3a <- read_csv(file.path(int_dir,"step4/maui_table3a_permitsApplied_ALL.csv"))
+kauai_3a <- read_csv(file.path(int_dir,"step4/kauai_table3a_permitsApplied_ALL.csv"))
+hi_3a <- read_csv(file.path(int_dir,"step4/hi_table3a_permitsApplied_ALL.csv"))
+
+final_table3a_allislands <- rbind(oahu_3a,
+                                  maui_3a,
+                                  kauai_3a,
+                                  hi_3a)
+
+final_table3a_allislands_until2020 <- final_table3b_allislands |> 
+  select(-ends_with(c("2008","2021","2022", "2023")))
+
+write_csv(final_table3a_allislands,file.path(driver_dir,"4_OSDS_N_Runoff/output-data/final_tables/table3a_allislands.csv"))
+write_csv(final_table3a_allislands,file.path(driver_dir,"4_OSDS_N_Runoff/output-data/final_tables/table3a_allislands_until2020.csv"))
+
 # ------------------ Table 3bs ----------------- #
 
 oahu_3b <- read_csv(file.path(int_dir,"step4/oahu_table3b_activeOSDS.csv")) |> 
