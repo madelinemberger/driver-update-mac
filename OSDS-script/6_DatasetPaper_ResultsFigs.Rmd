@@ -12,6 +12,40 @@ library(here)
 library(janitor)
 source(here("workflow/setup.R"))
 
+# color schemes for manuscript 
+
+# option 1 1 - 4
+county_pal <- c(
+  "Oahu"     = "#395B50", # Granite green
+  "Maui Nui" = "#C3ACCE", # Lilac
+  "Kauai"    = "#5A7684", # Blue slate
+  "Hawaii"   = "#8EAA80"  # Sage
+  #"Hawaii"   = "#CFEE9E"# Alternate, Lime Cream
+)
+
+# osds class pal: 1 - 4
+
+class_pal <- c(
+  "Class 1" = "#F2E3C6", # Cream / Low
+  "Class 2" = "#E69F00", # Warm Amber
+  "Class 3" = "#D55E00", # Vermilion / Medium-High
+  "Class 4" = "#730000"  # Deep Crimson / High
+)
+
+class_pal_earthy <- c( "Class 1" = "#1C6E8C", #-cerulean blue:
+              "Class 2" = "#89bd9eff",  #--muted-teal: 
+              "Class 3" = "#f0c987ff", #--apricot-cream: 
+               "Class 4" = "#a53f2bff") #--reddish-brown: 
+
+
+island_pal <- c(
+  "Oahu"     = "#0072B2", # Ocean Blue
+  "Maui" = "#009E73", # Jade / Seafoam
+  "Kauai"    = "#E6B800", # Sun Yellow
+  "Hawaii"   = "#CC79A7", # Orchid Pink / Lava
+  "Molokai"  = "#332288"  # Deep Indigo
+)
+
 ```
 
 # Summary
@@ -105,34 +139,44 @@ table3b_wide <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/final
 
 class_bits <- c("Class 1" = 1, "Class 2" = 2, "Class 3" = 4, "Class 4" = 8)
 
-table_3a_long <- table3a_wide |> 
-  pivot_longer(cols = starts_with("osds"), names_to = "year_raw", values_to = "raw_val") |> 
+county_codes <- c("1" = "Oahu", "2" = "Maui Nui", "3" = "Hawaii", "4" = "Kauai")
+
+table_3a_long <- table3a_wide |>
+  mutate(county = county_codes[substr(tmk, 1, 1)]) |>
+  pivot_longer(cols = starts_with("osds"), names_to = "year_raw", values_to = "raw_val") |>
   mutate(year_num = parse_number(year_raw)) |>
   filter(!is.na(raw_val)) |>
   mutate(
     osds_class = map(raw_val, \(val) {
       names(class_bits)[bitwAnd(val, class_bits) > 0]
     })
-  ) |> 
+  ) |>
   unnest(osds_class)
-  
 
-plot_data <- table_3a_long |> 
-  filter(year_num %!in% c(2009,2010)) |> 
-  group_by(year_num, osds_class) |> 
-  summarize(count = n(), .groups = "drop")
 
-ggplot(plot_data, aes(x = year_num, y = count, fill = factor(osds_class), group = factor(osds_class))) +
-  geom_area(alpha = 0.85, color = "white", linewidth = 0.3) +
-  scale_x_continuous(breaks = unique(plot_data$year_num), expand = c(0, 0)) +
+plot_data <- table_3a_long |>
+  filter(year_num %!in% c(2009,2010,2021,2022,2023)) |>
+  group_by(year_num, county, osds_class) |>
+  summarize(count = n(), .groups = "drop") |>
+  # fill in year x county x class combos with no permits so bars drop to zero
+  # instead of getting skipped
+  complete(year_num, county, osds_class, fill = list(count = 0))
+
+plot_a <- ggplot(plot_data, aes(x = year_num, y = count, fill = factor(osds_class), group = factor(osds_class))) +
+  geom_col(position = "stack", color = "white", linewidth = 0.3) +
+  scale_fill_manual(values = class_pal) +
+  scale_x_continuous(breaks = unique(plot_data$year_num), expand = expansion(add = 0.5)) +
   scale_y_continuous(expand = c(0, 0)) +
+  facet_wrap(~ county, scales = "free_y") +
   labs(
-    title = "OSDS Class Changes Over Time",
+    title = "OSDS Permits Applied for Over Time",
     x = "Year",
-    y = "Number of OSDS Permits Applied for",
+    y = "Number of OSDS Permits",
     fill = "OSDS Class"
   ) +
   theme_minimal()
+
+plot_a
 
 
 # repeat for table 3b
@@ -140,27 +184,30 @@ table_3b_long <- table3b_wide |>
   pivot_longer(cols = starts_with("osds"), names_to = "year", values_to = "osds_class")
 
 
-table_3b_long <- table3b_wide |> 
-  pivot_longer(cols = starts_with("osds"), names_to = "year_raw", values_to = "raw_val") |> 
+table_3b_long <- table3b_wide |>
+  mutate(county = county_codes[substr(tmk, 1, 1)]) |>
+  pivot_longer(cols = starts_with("osds"), names_to = "year_raw", values_to = "raw_val") |>
   mutate(year_num = parse_number(year_raw)) |>
   filter(!is.na(raw_val)) |>
   mutate(
     osds_class = map(raw_val, \(val) {
       names(class_bits)[bitwAnd(val, class_bits) > 0]
     })
-  ) |> 
+  ) |>
   unnest(osds_class)
 
 
-plot_data_b <- table_3b_long |> 
-  filter(year_num %!in% c(2008,2009)) |> 
-  group_by(year_num, osds_class) |> 
+plot_data_b <- table_3b_long |>
+  filter(year_num %!in% c(2008,2009,2021,2022,2023)) |>
+  group_by(year_num, county, osds_class) |>
   summarize(count = n(), .groups = "drop")
 
-ggplot(plot_data_b, aes(x = year_num, y = count, fill = factor(osds_class), group = factor(osds_class))) +
+plot_b <- ggplot(plot_data_b, aes(x = year_num, y = count, fill = factor(osds_class), group = factor(osds_class))) +
   geom_area(alpha = 0.85, color = "white", linewidth = 0.3) +
+  scale_fill_manual(values = class_pal) +
   scale_x_continuous(breaks = unique(plot_data_b$year_num), expand = c(0, 0)) +
   scale_y_continuous(expand = c(0, 0)) +
+  facet_wrap(~ county, scales = "free_y") +
   labs(
     title = "Active OSDS Over Time",
     x = "Year",
@@ -169,11 +216,141 @@ ggplot(plot_data_b, aes(x = year_num, y = count, fill = factor(osds_class), grou
   ) +
   theme_minimal()
 
+plot_b
+
+# combine with patchwork, sharing one class legend
+
+library(patchwork)
+
+combined_plot <- (plot_a / plot_b) +
+  plot_layout(guides = "collect") &
+  theme(
+    legend.position = "bottom",
+    plot.title = element_text(size = 10),
+    axis.title = element_text(size = 8),
+    axis.text = element_text(size = 6),
+    strip.text = element_text(size = 7),
+    legend.title = element_text(size = 8),
+    legend.text = element_text(size = 7),
+    legend.key.size = unit(0.35, "cm")
+  )
+
+combined_plot
+
+ggsave(
+  filename = "osds_permits_active_by_county_Bar.png",
+  plot = combined_plot,
+  path = here("OSDS-script/figs"),
+  width = 6.5,
+  height = 8,
+  dpi = 300
+)
+
+# same two plots, but colored by county and faceted by class instead
+
+plot_a_bycounty <- ggplot(plot_data, aes(x = year_num, y = count, fill = county, group = county)) +
+  geom_col(position = "stack", color = "white", linewidth = 0.3) +
+  scale_fill_manual(values = county_pal) +
+  scale_x_continuous(breaks = unique(plot_data$year_num), expand = expansion(add = 0.5)) +
+  scale_y_continuous(expand = c(0, 0)) +
+  facet_wrap(~ osds_class, scales = "free_y") +
+  labs(
+    title = "OSDS Permits Applied for Over Time by County",
+    x = "Year",
+    y = "Number of OSDS Permits",
+    fill = "County"
+  ) +
+  theme_minimal()
+
+plot_a_bycounty
+
+plot_b_bycounty <- ggplot(plot_data_b, aes(x = year_num, y = count, fill = county, group = county)) +
+  geom_area(alpha = 0.85, color = "white", linewidth = 0.3) +
+  scale_fill_manual(values = county_pal) +
+  scale_x_continuous(breaks = unique(plot_data_b$year_num), expand = c(0, 0)) +
+  scale_y_continuous(expand = c(0, 0)) +
+  facet_wrap(~ osds_class, scales = "free_y") +
+  labs(
+    title = "Active OSDS Over Time by County",
+    x = "Year",
+    y = "Number of Active OSDS",
+    fill = "County"
+  ) +
+  theme_minimal()
+
+plot_b_bycounty
+
+combined_plot_bycounty <- (plot_a_bycounty / plot_b_bycounty) +
+  plot_layout(guides = "collect") &
+  theme(
+    legend.position = "bottom",
+    plot.title = element_text(size = 10),
+    axis.title = element_text(size = 8),
+    axis.text = element_text(size = 6),
+    strip.text = element_text(size = 7),
+    legend.title = element_text(size = 8),
+    legend.text = element_text(size = 7),
+    legend.key.size = unit(0.35, "cm")
+  )
+
+combined_plot_bycounty
+
+ggsave(
+  plot = combined_plot_bycounty,
+  filename = "osds_permits_active_by_class_Bar.png",
+  path = here("OSDS-script/figs"),
+  width = 6.5,
+  height = 8,
+  dpi = 300
+)
+
+
+## bar graph for effluent by county by year
+
+
+
+
 ```
 
+### Active OSDS by county, 2010 vs 2020 (Class 1-3 vs Class 4)
+
+```{r results-2-summary}
+
+# lump classes 1-3 together, keep class 4 on its own
+
+class_group_lookup <- c(
+  "Class 1" = "Class 1-3",
+  "Class 2" = "Class 1-3",
+  "Class 3" = "Class 1-3",
+  "Class 4" = "Class 4"
+)
+
+active_osds_summary <- table_3b_long |>
+  filter(year_num %in% c(2010, 2020)) |>
+  mutate(class_group = class_group_lookup[osds_class]) |>
+  group_by(county, year_num, class_group) |>
+  summarize(count = n(), .groups = "drop") |>
+  arrange(county, year_num, class_group)
+
+active_osds_summary
+
+# wide format: one row per county, columns for each year x class group
+
+active_osds_summary_wide <- active_osds_summary |>
+  pivot_wider(names_from = c(year_num, class_group), values_from = count, values_fill = 0) |> 
+  mutate(change_1_3 = `2010_Class 1-3` - `2020_Class 1-3`,
+         change_4 = `2010_Class 4` - `2020_Class 4`)
+
+active_osds_summary_wide
+
+```
 
 
 
 ## Result 3: Spatial Shifts in OSDS over the past Decade by Moku
 
 Here we will designate moku by increase or decrease over the 10 year span. 
+
+Step 1: Add moku to spatialized effluent calcuations
+- sum effluent by moku
+- sum osds by moku?

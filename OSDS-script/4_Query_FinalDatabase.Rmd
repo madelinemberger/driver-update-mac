@@ -300,9 +300,9 @@ N loading by class assignment - note this is averaging the ranges in Whittier an
 | Class | N Loading (mg/L) Range | Average |
 |:--------------|:--------------|:--------------|
 | Class 1| 1 | 1 |
-| Class 2 | 39 – 82 | 60.5 |
-| Class 3 | 7 - 60 | 33.5 |
-| Class 4 | 15-90 | 37.5 |
+| Class 2 | 39 – 82 | 34 |
+| Class 3 | 7 - 60 | 58 |
+| Class 4 | 15-90 | 87 |
 
 
 
@@ -325,7 +325,7 @@ commercial_long <- read_csv(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/fi
 
 ni_lookup <- data.frame(
   class = c(0,1,2,4,8),
-  ni_mg_l = c(0,1,60.5,33.5,37.5)
+  ni_mg_l = c(0,1,34,58,87)
 )
 
 # ------------ expand ni look up to include average classess -------- # 
@@ -338,9 +338,9 @@ base_classes <- tribble(
   ~bit_flag, ~class_name, ~ni_mg_l,
   0,         "No class",  0,
   1,         "Class_1",   1.0,
-  2,         "Class_2",   60.5,
-  4,         "Class_3",   33.5,
-  8,         "Class_4",   37.5
+  2,         "Class_2",   34,
+  4,         "Class_3",   58,
+  8,         "Class_4",   87
 )
 
 # 2. Function to decode a bitwise sum into its constituent bit flags
@@ -495,11 +495,13 @@ commercial_effluent_everyear_clean <- annual_effluent_nflux_comm |>
 
 # save - this wont run without wifi but thats ok.
 
+
+
 write_csv(residential_effluent_everyear_clean,
-          file.path(driver_dir,"4_OSDS_N_Runoff/output-data/calculated_effluent/v0/residential_kg_pyear.csv"))
+          file.path(driver_dir,"4_OSDS_N_Runoff/output-data/calculated_effluent/v1/residential_kg_pyear.csv"))
 
 write_csv(commercial_effluent_everyear_clean,
-          file.path(driver_dir,"4_OSDS_N_Runoff/output-data/calculated_effluent/v0/non_residential_kg_pyear.csv"))
+          file.path(driver_dir,"4_OSDS_N_Runoff/output-data/calculated_effluent/v1/non_residential_kg_pyear.csv"))
 
 
 ```
@@ -507,6 +509,8 @@ write_csv(commercial_effluent_everyear_clean,
 Versioning Notes:
 v0 will be using what I found in the tables but clearly needs to be updated.
 What is the most up to date version>
+
+v1 will be using N loading updated after talking to Joey
 
 ## Join Calculated Effluent to Spatial Points - Save
 
@@ -541,14 +545,16 @@ length(unique(table_1_spatial$tmk))
 
 # Join res effluent
 
-table_1_spatial_effleunt <- table_1_spatial |> 
+table_1_spatial_effluent <- table_1_spatial |> 
   left_join(effluent_multi_year_averages, by = "tmk") |> 
   filter(!is.na(n_avg_2010_2014) & !is.na(n_avg_2015_2020)) 
+
+hist(table_1_spatial_effluent$n_avg_2010_2014)
 
 # 95.7 % remain. SICK, N = 4302 dropped out
 
 st_write(table_1_spatial_effleunt,
-          file.path(driver_dir,"4_OSDS_N_Runoff/output-data/calculated_effluent/v0/alleffluent_5yraverages_spatial.gpkg"))
+          file.path(driver_dir,"4_OSDS_N_Runoff/output-data/calculated_effluent/v1/alleffluent_5yraverages_spatial.gpkg"))
 
 ```
 
