@@ -351,6 +351,21 @@ active_osds_summary_wide
 
 Here we will designate moku by increase or decrease over the 10 year span. 
 
-Step 1: Add moku to spatialized effluent calcuations
+Fig 1: Map with moku with increase or decrease
+
+Add moku to spatialized effluent calcuations
 - sum effluent by moku
 - sum osds by moku?
+
+Fig 2: Watershed shifts - line graph
+
+```{r}
+
+file.path(driver_dir,"4_OSDS_N_Runoff/output-data/calculated_effluent/v1/alleffluent_5yraverages_spatial.gpkg")
+
+
+
+```
+
+
+
