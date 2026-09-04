@@ -553,7 +553,7 @@ hist(table_1_spatial_effluent$n_avg_2010_2014)
 
 # 95.7 % remain. SICK, N = 4302 dropped out
 
-st_write(table_1_spatial_effleunt,
+st_write(table_1_spatial_effluent,
           file.path(driver_dir,"4_OSDS_N_Runoff/output-data/calculated_effluent/v1/alleffluent_5yraverages_spatial.gpkg"))
 
 ```

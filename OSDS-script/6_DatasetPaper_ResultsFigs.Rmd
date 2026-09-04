@@ -12,6 +12,8 @@ library(here)
 library(janitor)
 source(here("workflow/setup.R"))
 
+common_dir <- file.path(driver_dir,"0_Input_Data_and_Models")
+
 # color schemes for manuscript 
 
 # option 1 1 - 4
@@ -361,8 +363,110 @@ Fig 2: Watershed shifts - line graph
 
 ```{r}
 
-file.path(driver_dir,"4_OSDS_N_Runoff/output-data/calculated_effluent/v1/alleffluent_5yraverages_spatial.gpkg")
+# 5 year averages - I donʻt think this one will show up
+avg_5_yr_pts <- st_read(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/calculated_effluent/v1/alleffluent_5yraverages_spatial.gpkg"))
 
+# all points - select just 2010 and 2020 and then summarize
+
+
+# table only version
+
+avg_5_yr_watershed <- avg_5_yr_pts |>
+  st_drop_geometry() |>
+  mutate(county = recode(county, "Honolulu" = "Oahu")) |>
+  group_by(HUC12, Name) |>
+  summarize(
+    county = first(county), # assumes a watershed doesn't span multiple counties
+    total_10_14 = sum(n_avg_2010_2014),
+    total_15_19 = sum(n_avg_2015_2020),
+    ten_yr_change = total_15_19 - total_10_14,
+    .groups = "drop"
+  )
+
+# read in watershed polygons
+
+watershed_meta <- read_sf(file.path(common_dir, "Common_2024/Finalized/Coastlines_Watersheds/WBD_HU12_n83utm4_2023fixed/WBD_HU12_n83utm4_2023fixed.shp")) %>%
+  select(HUC12, Name, AreaSqKm) %>% 
+  mutate(HUC12 = as.character(HUC12))
+
+
+watershed_with_change <- watershed_meta |>
+  left_join(avg_5_yr_watershed, by = c("HUC12", "Name"))
+
+# add islands if helpful
+# islands <- read_sf(file.path(dropbox_dir, "Drivers/1_AgGolf_Runoff/outputs/watershed_level/polys/watershed_allAg_clean.shp")) %>%
+#   select(HUC12, island) %>%
+#   st_drop_geometry()
+
+# map of 10-year change in effluent by watershed
+# diverging scale: green = decrease, red = increase, white = no change
+
+# facet_wrap(scales = "free") isn't supported with coord_sf (which geom_sf adds
+# implicitly), so zoom per county by building one map per county and combining
+# them with patchwork instead
+
+change_range <- range(watershed_with_change$ten_yr_change, na.rm = TRUE)
+
+county_maps <- watershed_with_change |>
+  filter(!is.na(county)) |>
+  group_split(county) |>
+  purrr::map(function(county_sf) {
+    bbox <- st_bbox(county_sf)
+    ggplot(county_sf) +
+      geom_sf(aes(fill = ten_yr_change), color = "grey40", linewidth = 0.1) +
+      scale_fill_gradient2(
+        low = "#1a7a3c",
+        mid = "white",
+        high = "#b32020",
+        midpoint = 0,
+        na.value = "grey90",
+        limits = change_range,
+        name = "10-yr change\n(kg N/yr)"
+      ) +
+      coord_sf(xlim = c(bbox["xmin"], bbox["xmax"]), ylim = c(bbox["ymin"], bbox["ymax"])) +
+      labs(title = unique(county_sf$county)) +
+      theme_minimal() +
+      theme(axis.text = element_blank(), axis.ticks = element_blank())
+  })
+
+map_10yr_change <- patchwork::wrap_plots(county_maps, guides = "collect") +
+  # coord_sf locks each panel to its true geographic aspect ratio, so by
+  # default patchwork sizes panels to keep a consistent real-world scale
+  # (giving more room to physically larger counties like Hawaii and Kauai)
+  # forcing equal widths/heights overrides that and gives every panel the
+  # same footprint instead
+  patchwork::plot_layout(widths = 1, heights = 1) +
+  patchwork::plot_annotation(title = "10-Year Change in OSDS Nitrogen Effluent by Watershed")
+
+map_10yr_change
+
+ggsave(
+  filename = "watershed_10yr_change_draft.png",
+  plot = map_10yr_change,
+  path = here("OSDS-script/figs"),
+  width = 6.5,
+  height = 6,
+  dpi = 300
+)
+
+
+
+
+
+
+
+# Every year for every point
+write_csv(residential_effluent_everyear_clean,
+          file.path(driver_dir,"4_OSDS_N_Runoff/output-data/calculated_effluent/v1/residential_kg_pyear.csv"))
+
+write_csv(commercial_effluent_everyear_clean,
+          file.path(driver_dir,"4_OSDS_N_Runoff/output-data/calculated_effluent/v1/non_residential_kg_pyear.csv"))
+
+
+
+# Spatial data - no effluent
+
+table_1_spatial <- st_read(file.path(driver_dir,"4_OSDS_N_Runoff/output-data/final_tables/table1_tmk_registry_withSpatial.shp"))
 
 
 ```
